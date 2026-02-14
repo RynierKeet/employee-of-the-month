@@ -21,3 +21,8 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+.idea/
+*.sql
+setup.ps1
+test-gas-endpoint.js
