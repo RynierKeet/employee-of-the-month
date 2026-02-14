@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+
+    "rootDir": "src",
+    "outDir": "dist",
+
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+
+    "sourceMap": true,
+    "declaration": false,
+    "declarationMap": false,
+
+    "isolatedModules": false,
+    "noUncheckedSideEffectImports": false,
+    "verbatimModuleSyntax": false,
+
+    "resolveJsonModule": true,
+
+    // ⭐ CRITICAL: Load Node, Express, and Express-Session types
+    "types": ["node", "express", "express-session"]
+  },
+
+  // ⭐ CRITICAL: Ensure your custom .d.ts files are included
+  "include": [
+    "src",
+    "src/types/**/*.d.ts"
+  ]
+}
