@@ -1,56 +1,112 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import db from "../db";
-import { getCurrentUser } from "../utils/auth";
 
 const router = Router();
 
 /* -----------------------------------------
+   Helper: Normalize role
+----------------------------------------- */
+function deriveRole(row: any): "Admin" | "Adjudicator" | "Employee" {
+  if (row.is_admin) return "Admin";
+  if (row.is_adjudicator) return "Adjudicator";
+  return "Employee";
+}
+
+/* -----------------------------------------
+   Utility: minimal session user shape
+----------------------------------------- */
+export interface SessionUser {
+  id: number;
+  name?: string;
+  email: string;
+  role: "Admin" | "Adjudicator" | "Employee";
+}
+
+/* -----------------------------------------
+   GET /auth/me
+   - Returns the current session user if authenticated
+----------------------------------------- */
+router.get("/me", (req: Request, res: Response) => {
+  try {
+    const session = req.session as any;
+    const user: SessionUser | undefined = session?.user;
+    if (!user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    return res.json({ success: true, user });
+  } catch (err) {
+    console.error("GET /auth/me error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* -----------------------------------------
    POST /auth/login
+   - Accepts { email, password }
+   - Normalizes email, looks up user, compares bcrypt hash
+   - Sets minimal session.user on success
 ----------------------------------------- */
 router.post("/login", async (req: Request, res: Response) => {
-  const { email, password } = req.body ?? {};
-
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password required" });
-  }
-
   try {
-    const [rows] = await db.pool.query(
-      `SELECT id, name, email, password_hash, is_admin, is_adjudicator
-       FROM employees
-       WHERE email = ?`,
-      [email]
-    );
+    const { email, password } = req.body ?? {};
 
-    const list = rows as any[];
-    if (list.length === 0) {
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
+    }
+
+    const normalizedEmail = (String(email) || "").trim().toLowerCase();
+
+    // Query DB (use normalized lookup to avoid case/whitespace mismatches)
+    const query = `
+      SELECT id, name, email, password_hash, is_admin, is_adjudicator, must_change_password
+      FROM employees
+      WHERE LOWER(TRIM(email)) = ?
+      LIMIT 1
+    `;
+    const raw = await db.pool.query(query, [normalizedEmail]);
+    // Normalize different client return shapes (mysql2 returns [rows, fields])
+    const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
+
+    if (!rows || rows.length === 0) {
+      // Do not reveal whether email exists
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    const user = list[0] as {
-      id: number;
-      name: string;
-      email: string;
-      password_hash: string | null;
-      is_admin: number;
-      is_adjudicator: number;
-    };
+    const userRow = rows[0];
 
-    const valid = await bcrypt.compare(password, user.password_hash || "");
+    if (!userRow.password_hash) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    const valid = await bcrypt.compare(String(password), userRow.password_hash);
     if (!valid) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    // Use a safe cast to avoid TS complaining about possibly undefined session
+    const role = deriveRole(userRow);
+
+    // Ensure session exists
     const session = req.session as any;
     if (!session) {
       return res.status(500).json({ error: "Session not initialized" });
     }
 
-    session.employee_id = user.id;
+    // Store minimal, non-sensitive user info in session
+    const sessionUser: SessionUser = {
+      id: userRow.id,
+      name: userRow.name || undefined,
+      email: userRow.email,
+      role,
+    };
+    session.user = sessionUser;
 
-    return res.json({ success: true });
+    // If the account requires a password change, inform the client
+    if (userRow.must_change_password) {
+      return res.json({ success: true, mustChangePassword: true, user: sessionUser });
+    }
+
+    return res.json({ success: true, user: sessionUser });
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Login failed" });
@@ -58,33 +114,91 @@ router.post("/login", async (req: Request, res: Response) => {
 });
 
 /* -----------------------------------------
-   GET /auth/me
+   POST /auth/change-password
+   - Accepts { currentPassword, newPassword, confirmPassword }
+   - Requires an authenticated session user
+   - Validates current password, hashes new password, updates DB
+   - Clears must_change_password flag
 ----------------------------------------- */
-router.get("/me", async (req: Request, res: Response) => {
+router.post("/change-password", async (req: Request, res: Response) => {
   try {
-    const user = await getCurrentUser(req);
-    if (!user) return res.status(401).json({ error: "Not logged in" });
+    const session = req.session as any;
+    const sessionUser: SessionUser | undefined = session?.user;
 
-    return res.json(user);
+    if (!sessionUser) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const { currentPassword, newPassword, confirmPassword } = req.body ?? {};
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: "All password fields are required" });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: "New password and confirmation do not match" });
+    }
+
+    // Basic password strength check (adjust to your policy)
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ error: "New password must be at least 8 characters" });
+    }
+
+    // Fetch current hash for the logged-in user by id
+    const q = `SELECT password_hash FROM employees WHERE id = ? LIMIT 1`;
+    const raw = await db.pool.query(q, [sessionUser.id]);
+    const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userRow = rows[0];
+    if (!userRow.password_hash) {
+      return res.status(400).json({ error: "No password set for this account" });
+    }
+
+    const currentValid = await bcrypt.compare(String(currentPassword), userRow.password_hash);
+    if (!currentValid) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    // Hash new password
+    const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
+    const newHash = await bcrypt.hash(String(newPassword), saltRounds);
+
+    // Update DB: set new hash and clear must_change_password
+    await db.pool.query(
+      `UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?`,
+      [newHash, sessionUser.id]
+    );
+
+    return res.json({ success: true });
   } catch (err) {
-    console.error("Auth me error:", err);
-    return res.status(500).json({ error: "Failed to load user" });
+    console.error("Change password error:", err);
+    return res.status(500).json({ error: "Failed to change password" });
   }
 });
 
 /* -----------------------------------------
    POST /auth/logout
+   - Destroys session and clears cookie
 ----------------------------------------- */
 router.post("/logout", (req: Request, res: Response) => {
-  const session = req.session as any;
-  if (!session || typeof session.destroy !== "function") {
-    // If for some reason there is no session, just respond success
-    return res.json({ success: true });
+  try {
+    // cast session to any so TypeScript recognizes destroy exists
+    (req.session as any)?.destroy((err: any) => {
+      if (err) {
+        console.error("Logout error:", err);
+        return res.status(500).json({ error: "Logout failed" });
+      }
+      res.clearCookie("connect.sid");
+      return res.json({ success: true });
+    });
+  } catch (err) {
+    console.error("Logout error:", err);
+    return res.status(500).json({ error: "Logout failed" });
   }
-
-  session.destroy(() => {
-    res.json({ success: true });
-  });
 });
 
 export default router;

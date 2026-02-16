@@ -1,6 +1,6 @@
 import { Router } from "express";
 import db from "../db";
-import { getCurrentUser, getIdentity } from "../utils/auth";
+import { getCurrentUser } from "../utils/auth";
 
 const router = Router();
 
@@ -11,12 +11,35 @@ function normalizeMonthKey(raw: string): string {
 }
 
 // -----------------------------------------------------
+// ADMIN-ONLY GUARD
+// -----------------------------------------------------
+router.use(async (req, res, next) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+
+    if (user.role !== "Admin") {
+      return res.status(403).json({ error: "Admin access only" });
+    }
+
+    // attach user to request for downstream handlers (cast to any to avoid TS errors)
+    (req as any).user = user;
+    next();
+  } catch (err) {
+    console.error("Admin guard error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// -----------------------------------------------------
 // GET /admin/employees
 // List all employees
 // -----------------------------------------------------
 router.get("/employees", async (_req, res) => {
   try {
-    const rows = await db.all("SELECT id, name, role FROM employees ORDER BY name");
+    const rows = await db.all(
+      "SELECT id, name, email, is_admin, is_adjudicator FROM employees ORDER BY name"
+    );
     return res.json(rows);
   } catch (err) {
     console.error("Error listing employees:", err);
@@ -27,21 +50,31 @@ router.get("/employees", async (_req, res) => {
 // -----------------------------------------------------
 // POST /admin/employees
 // Create a new employee
-// Body: { name: string, role?: 'Employee'|'Adjudicator' }
+// Body: { name: string, is_adjudicator?: boolean, is_admin?: boolean }
 // -----------------------------------------------------
 router.post("/employees", async (req, res) => {
-  const { name, role } = req.body ?? {};
+  const { name, is_adjudicator, is_admin } = req.body ?? {};
+
   if (!name || typeof name !== "string") {
     return res.status(400).json({ error: "Missing or invalid name" });
   }
-  const normalizedRole = role === "Adjudicator" ? "Adjudicator" : "Employee";
+
+  const adj = is_adjudicator ? 1 : 0;
+  const adm = is_admin ? 1 : 0;
 
   try {
     const result = await db.run(
-      "INSERT INTO employees (name, role) VALUES (?, ?)",
-      [name.trim(), normalizedRole]
+      "INSERT INTO employees (name, email, is_admin, is_adjudicator) VALUES (?, '', ?, ?)",
+      [name.trim(), adm, adj]
     );
-    return res.status(201).json({ success: true, id: result.insertId, name: name.trim(), role: normalizedRole });
+
+    return res.status(201).json({
+      success: true,
+      id: result.insertId,
+      name: name.trim(),
+      is_admin: adm,
+      is_adjudicator: adj,
+    });
   } catch (err) {
     console.error("Error creating employee:", err);
     return res.status(500).json({ error: "Failed to create employee" });
@@ -50,15 +83,14 @@ router.post("/employees", async (req, res) => {
 
 // -----------------------------------------------------
 // PUT /admin/employees/:id
-// Update employee name or role
-// Body: { name?: string, role?: 'Employee'|'Adjudicator' }
+// Update employee name or role flags
+// Body: { name?: string, is_admin?: boolean, is_adjudicator?: boolean }
 // -----------------------------------------------------
 router.put("/employees/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "Invalid employee id" });
 
-  const { name, role } = req.body ?? {};
-  if (!name && !role) return res.status(400).json({ error: "Nothing to update" });
+  const { name, is_admin, is_adjudicator } = req.body ?? {};
 
   const updates: string[] = [];
   const params: any[] = [];
@@ -67,18 +99,29 @@ router.put("/employees/:id", async (req, res) => {
     updates.push("name = ?");
     params.push(name.trim());
   }
-  if (role === "Adjudicator" || role === "Employee") {
-    updates.push("role = ?");
-    params.push(role);
+
+  if (typeof is_admin === "boolean") {
+    updates.push("is_admin = ?");
+    params.push(is_admin ? 1 : 0);
   }
 
-  if (updates.length === 0) return res.status(400).json({ error: "Invalid update fields" });
+  if (typeof is_adjudicator === "boolean") {
+    updates.push("is_adjudicator = ?");
+    params.push(is_adjudicator ? 1 : 0);
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
 
   params.push(id);
 
   try {
     await db.run(`UPDATE employees SET ${updates.join(", ")} WHERE id = ?`, params);
-    const updated = await db.get("SELECT id, name, role FROM employees WHERE id = ?", [id]);
+    const updated = await db.get(
+      "SELECT id, name, email, is_admin, is_adjudicator FROM employees WHERE id = ?",
+      [id]
+    );
     return res.json({ success: true, updated });
   } catch (err) {
     console.error("Error updating employee:", err);
@@ -88,14 +131,13 @@ router.put("/employees/:id", async (req, res) => {
 
 // -----------------------------------------------------
 // DELETE /admin/employees/:id
-// Delete an employee (and optionally cascade cleanup)
+// Delete an employee + cascade cleanup
 // -----------------------------------------------------
 router.delete("/employees/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "Invalid employee id" });
 
   try {
-    // Optionally remove related reflections and votes
     await db.run("DELETE FROM votes WHERE vote_for_id = ? OR voter_id = ?", [id, id]);
     await db.run("DELETE FROM reflections WHERE employee_id = ?", [id]);
     await db.run("DELETE FROM employees WHERE id = ?", [id]);
@@ -109,18 +151,41 @@ router.delete("/employees/:id", async (req, res) => {
 
 // -----------------------------------------------------
 // POST /admin/set-role
-// Body: { employee_id: number, role: 'Employee'|'Adjudicator' }
+// Body: { employee_id: number, is_admin?: boolean, is_adjudicator?: boolean }
 // -----------------------------------------------------
 router.post("/set-role", async (req, res) => {
-  const { employee_id, role } = req.body ?? {};
+  const { employee_id, is_admin, is_adjudicator } = req.body ?? {};
   const id = Number(employee_id);
-  if (!id || (role !== "Employee" && role !== "Adjudicator")) {
-    return res.status(400).json({ error: "Invalid employee_id or role" });
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid employee_id" });
   }
 
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (typeof is_admin === "boolean") {
+    updates.push("is_admin = ?");
+    params.push(is_admin ? 1 : 0);
+  }
+
+  if (typeof is_adjudicator === "boolean") {
+    updates.push("is_adjudicator = ?");
+    params.push(is_adjudicator ? 1 : 0);
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
+
+  params.push(id);
+
   try {
-    await db.run("UPDATE employees SET role = ? WHERE id = ?", [role, id]);
-    const updated = await db.get("SELECT id, name, role FROM employees WHERE id = ?", [id]);
+    await db.run(`UPDATE employees SET ${updates.join(", ")} WHERE id = ?`, params);
+    const updated = await db.get(
+      "SELECT id, name, email, is_admin, is_adjudicator FROM employees WHERE id = ?",
+      [id]
+    );
     return res.json({ success: true, updated });
   } catch (err) {
     console.error("Error setting role:", err);
@@ -131,13 +196,13 @@ router.post("/set-role", async (req, res) => {
 // -----------------------------------------------------
 // POST /admin/reset
 // Deletes all votes + reflections for a given month_key
-// Body: { month_key: string }
 // -----------------------------------------------------
 router.post("/reset", async (req, res) => {
   const { month_key } = req.body ?? {};
   if (!month_key || typeof month_key !== "string") {
     return res.status(400).json({ error: "Missing or invalid month_key" });
   }
+
   const normalized = normalizeMonthKey(month_key);
 
   try {
@@ -157,7 +222,10 @@ router.post("/reset", async (req, res) => {
 router.get("/reflections", async (req, res) => {
   const month = typeof req.query.month === "string" ? req.query.month : "";
   const month_key = normalizeMonthKey(month);
-  if (!month_key) return res.status(400).json({ error: "Missing month" });
+
+  if (!month_key) {
+    return res.status(400).json({ error: "Missing month" });
+  }
 
   try {
     const rows = await db.all(
@@ -168,6 +236,7 @@ router.get("/reflections", async (req, res) => {
        ORDER BY e.name`,
       [month_key]
     );
+
     return res.json(rows);
   } catch (err) {
     console.error("Error fetching reflections for admin:", err);
@@ -182,7 +251,10 @@ router.get("/reflections", async (req, res) => {
 router.get("/votes", async (req, res) => {
   const month = typeof req.query.month === "string" ? req.query.month : "";
   const month_key = normalizeMonthKey(month);
-  if (!month_key) return res.status(400).json({ error: "Missing month" });
+
+  if (!month_key) {
+    return res.status(400).json({ error: "Missing month" });
+  }
 
   try {
     const rows = await db.all(
@@ -195,6 +267,7 @@ router.get("/votes", async (req, res) => {
        ORDER BY v.created_at DESC`,
       [month_key]
     );
+
     return res.json(rows);
   } catch (err) {
     console.error("Error fetching votes for admin:", err);

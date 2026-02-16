@@ -10,6 +10,7 @@ import resultsRouter from "./routes/results";
 import resultsFinalRouter from "./routes/results-final";
 import adminRouter from "./routes/admin";
 import adjudicationRouter from "./routes/adjudication";
+import authRouter from "./routes/auth";
 
 import db from "./db";
 
@@ -17,25 +18,34 @@ dotenv.config();
 
 const app = express();
 
+// Use require for connect-sqlite3 to avoid missing type declarations in TS.
+// Treat the store as `any` for middleware wiring.
+const SQLiteStore: any = require("connect-sqlite3")(session);
+
 // -----------------------------------------------------
 // CORE MIDDLEWARE
 // -----------------------------------------------------
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 // -----------------------------------------------------
 // SESSION MIDDLEWARE (CRITICAL)
 // -----------------------------------------------------
+// Lightweight SQLite-backed store for local development so sessions survive restarts.
+// Replace with Redis or another shared store in production and set cookie.secure = true.
 app.use(
   session({
+    store: new SQLiteStore({ db: "sessions.sqlite", dir: "./var" }),
     secret: process.env.SESSION_SECRET || "dev-secret",
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false, // set true only behind HTTPS
+      secure: false, // set true only behind HTTPS in production
       httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 24 * 7 // 7 days
-    }
+      sameSite: "lax",
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    },
   })
 );
 
@@ -100,14 +110,16 @@ async function reflectionsUniquePerMonthMiddleware(
     if (existing) {
       return res.status(409).json({
         error: "You have already submitted a reflection for this month.",
-        existing
+        existing,
       });
     }
 
     next();
   } catch (err) {
     console.error("Error checking existing reflection:", err);
-    return res.status(500).json({ error: "Failed to validate reflection uniqueness." });
+    return res
+      .status(500)
+      .json({ error: "Failed to validate reflection uniqueness." });
   }
 }
 
@@ -115,6 +127,9 @@ async function reflectionsUniquePerMonthMiddleware(
 // ROUTE MOUNTING
 // -----------------------------------------------------
 const mountedRoutes: string[] = [];
+
+app.use("/auth", authRouter);
+mountedRoutes.push("POST/GET /auth/*");
 
 app.use("/employees", employeesRouter);
 mountedRoutes.push("GET/POST/PUT/DELETE /employees");
@@ -143,13 +158,14 @@ mountedRoutes.push("GET/POST /adjudication");
 app.use((req, res, next) => {
   const accepts = String(req.headers.accept || "");
   const apiPrefixes = [
+    "/auth",
     "/employees",
     "/reflections",
     "/votes",
     "/results",
     "/results-final",
     "/admin",
-    "/adjudication"
+    "/adjudication",
   ];
 
   const isApi = apiPrefixes.some((p) => req.originalUrl.startsWith(p));
@@ -171,18 +187,25 @@ app.use((_req, res) => {
 // -----------------------------------------------------
 // CENTRAL ERROR HANDLER
 // -----------------------------------------------------
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("Unhandled error:", err);
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction
+  ) => {
+    console.error("Unhandled error:", err);
 
-  const msg = String(err?.message || "");
-  if (/unique|constraint|UNIQUE constraint failed/i.test(msg)) {
-    return res.status(409).json({ error: "Duplicate entry detected." });
+    const msg = String(err?.message || "");
+    if (/unique|constraint|UNIQUE constraint failed/i.test(msg)) {
+      return res.status(409).json({ error: "Duplicate entry detected." });
+    }
+
+    const status = err?.status || 500;
+    const message = err?.message || "Internal server error";
+    res.status(status).json({ error: message });
   }
-
-  const status = err?.status || 500;
-  const message = err?.message || "Internal server error";
-  res.status(status).json({ error: message });
-});
+);
 
 // -----------------------------------------------------
 // ENSURE UNIQUE INDEX ON REFLECTIONS
