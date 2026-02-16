@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
-import { Link, useLocation } from "react-router-dom";
-import crgLogo from "../assets/crg-logo.png"; // Update if your logo file name differs
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+
+import crgLogo from "../assets/crg-logo.png";
+import { fetchCurrentUser, logout } from "../utils/auth";
+import type { AuthUser } from "../utils/auth";
 
 interface LayoutProps {
   children: ReactNode;
@@ -8,7 +12,24 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
+  const navigate = useNavigate();
+
+  const [user, setUser] = useState<AuthUser | null>(null);
+
   const isActive = (path: string) => location.pathname.startsWith(path);
+
+  useEffect(() => {
+    async function load() {
+      const u = await fetchCurrentUser();
+      setUser(u);
+    }
+    load();
+  }, []);
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-crg">
@@ -34,48 +55,87 @@ export default function Layout({ children }: LayoutProps) {
             </div>
           </div>
 
-          {/* RIGHT: Navigation */}
-          <nav className="flex items-center gap-5 text-sm font-medium">
+          {/* RIGHT: Navigation + User */}
+          <div className="flex items-center gap-8">
 
-            <NavLink
-              to="/submit-reflection"
-              label="Submit Reflection"
-              active={isActive("/submit-reflection") || location.pathname === "/"}
-            />
+            {/* NAVIGATION */}
+            {user && (
+              <nav className="flex items-center gap-5 text-sm font-medium">
 
-            <NavLink
-              to="/reflections-vote"
-              label="Reflections & Voting"
-              active={isActive("/reflections-vote")}
-            />
+                {/* Employee-only */}
+                {["Employee", "Adjudicator", "Admin"].includes(user.role) && (
+                  <NavLink
+                    to="/submit-reflection"
+                    label="Submit Reflection"
+                    active={
+                      isActive("/submit-reflection") ||
+                      location.pathname === "/"
+                    }
+                  />
+                )}
 
-            <NavLink
-              to="/results"
-              label="Results"
-              active={isActive("/results")}
-            />
+                {/* Employee-only */}
+                {user.role === "Employee" && (
+                  <NavLink
+                    to="/reflections-vote"
+                    label="Reflections & Voting"
+                    active={isActive("/reflections-vote")}
+                  />
+                )}
 
-            <NavLink
-              to="/final-results"
-              label="Final Results"
-              active={isActive("/final-results")}
-            />
+                {/* All roles */}
+                <NavLink
+                  to="/results"
+                  label="Results"
+                  active={isActive("/results")}
+                />
 
-            <NavLink
-              to="/admin"
-              label="Admin"
-              active={isActive("/admin")}
-            />
+                <NavLink
+                  to="/final-results"
+                  label="Final Results"
+                  active={isActive("/final-results")}
+                />
 
-            <NavLink
-              to="/adjudication"
-              label="Adjudication"
-              active={
-                isActive("/adjudication") ||
-                isActive("/adjudication-panel")
-              }
-            />
-          </nav>
+                {/* Admin-only */}
+                {user.role === "Admin" && (
+                  <NavLink
+                    to="/admin"
+                    label="Admin"
+                    active={isActive("/admin")}
+                  />
+                )}
+
+                {/* Adjudicator + Admin */}
+                {["Adjudicator", "Admin"].includes(user.role) && (
+                  <NavLink
+                    to="/adjudication"
+                    label="Adjudication"
+                    active={
+                      isActive("/adjudication") ||
+                      isActive("/adjudication-panel")
+                    }
+                  />
+                )}
+              </nav>
+            )}
+
+            {/* USER INFO + LOGOUT */}
+            {user && (
+              <div className="flex items-center gap-4">
+                <div className="text-right leading-tight">
+                  <div className="font-semibold text-crgGold">{user.name}</div>
+                  <div className="text-xs text-slate-200">{user.role}</div>
+                </div>
+
+                <button
+                  onClick={handleLogout}
+                  className="bg-white text-crgBlue px-3 py-1 rounded font-semibold hover:bg-slate-200 transition"
+                >
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Gold accent line */}
@@ -139,7 +199,6 @@ function ProcessBar() {
     { label: "Final Results", path: "/final-results" },
   ];
 
-  // Determine the index of the current step
   const currentIndex = steps.findIndex((step) =>
     location.pathname.startsWith(step.path)
   );
@@ -152,8 +211,6 @@ function ProcessBar() {
 
         return (
           <div key={step.path} className="flex items-center gap-3">
-
-            {/* Dot indicator */}
             <div
               className={
                 isCurrent
@@ -164,7 +221,6 @@ function ProcessBar() {
               }
             />
 
-            {/* Step label */}
             <span
               className={
                 isCurrent
@@ -177,7 +233,6 @@ function ProcessBar() {
               {index + 1}. {step.label}
             </span>
 
-            {/* Arrow */}
             {index < steps.length - 1 && (
               <span className="text-slate-400">→</span>
             )}

@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import session from "express-session";
+import fs from "fs";
+import path from "path";
 
 import employeesRouter from "./routes/employees";
 import reflectionsRouter from "./routes/reflections";
@@ -23,25 +25,96 @@ const app = express();
 const SQLiteStore: any = require("connect-sqlite3")(session);
 
 // -----------------------------------------------------
+// Ensure session directory exists (before session store is created)
+// -----------------------------------------------------
+const sessionDir = path.resolve(process.cwd(), "var");
+try {
+  fs.mkdirSync(sessionDir, { recursive: true });
+} catch (err) {
+  console.error("Could not create session directory:", err);
+  // continue so the error is visible in logs; session store will fail loudly if unusable
+}
+
+// -----------------------------------------------------
+// RATE LIMITER: require dynamically so TS/Node won't fail if package isn't installed
+// If express-rate-limit is not installed, we fall back to a no-op middleware.
+// -----------------------------------------------------
+let createRateLimit: any = null;
+try {
+  createRateLimit = require("express-rate-limit");
+} catch (err) {
+  createRateLimit = null;
+  console.warn(
+    "express-rate-limit not installed; login rate limiting disabled. Install with: npm install express-rate-limit"
+  );
+}
+
+const loginLimiter =
+  createRateLimit
+    ? createRateLimit({
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        max: 10, // limit each IP to 10 requests per windowMs
+        standardHeaders: true,
+        legacyHeaders: false,
+      })
+    : ((req: express.Request, res: express.Response, next: express.NextFunction) => next());
+
+// -----------------------------------------------------
+// LOGGER: require morgan dynamically; fallback to simple logger if missing
+// -----------------------------------------------------
+let morganMiddleware: any = null;
+try {
+  // require so missing types won't break compilation/runtime if not installed
+  const morgan = require("morgan");
+  morganMiddleware = morgan("dev");
+} catch (err) {
+  morganMiddleware = (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    // minimal structured log fallback
+    // eslint-disable-next-line no-console
+    console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+    next();
+  };
+  console.warn("morgan not installed; using simple console logger. Install with: npm install morgan");
+}
+
+// -----------------------------------------------------
+// Require SESSION_SECRET (fail fast in production)
+// -----------------------------------------------------
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET && process.env.NODE_ENV === "production") {
+  console.error("SESSION_SECRET is not set. Exiting.");
+  process.exit(1);
+}
+if (!SESSION_SECRET) {
+  console.warn("SESSION_SECRET not set — using dev fallback. Set SESSION_SECRET in production.");
+}
+
+// -----------------------------------------------------
 // CORE MIDDLEWARE
 // -----------------------------------------------------
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(morganMiddleware);
+
+// Mount the limiter specifically on the login endpoint before authRouter is mounted
+app.use("/auth/login", loginLimiter);
 
 // -----------------------------------------------------
 // SESSION MIDDLEWARE (CRITICAL)
 // -----------------------------------------------------
 // Lightweight SQLite-backed store for local development so sessions survive restarts.
 // Replace with Redis or another shared store in production and set cookie.secure = true.
+const isProd = process.env.NODE_ENV === "production";
+
 app.use(
   session({
-    store: new SQLiteStore({ db: "sessions.sqlite", dir: "./var" }),
-    secret: process.env.SESSION_SECRET || "dev-secret",
+    store: new SQLiteStore({ db: "sessions.sqlite", dir: sessionDir }),
+    secret: SESSION_SECRET || "dev-secret",
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false, // set true only behind HTTPS in production
+      secure: isProd, // set true only behind HTTPS in production
       httpOnly: true,
       sameSite: "lax",
       maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
@@ -50,10 +123,12 @@ app.use(
 );
 
 // -----------------------------------------------------
-// SIMPLE REQUEST LOGGER
+// SIMPLE REQUEST LOGGER (additional to morgan for structured logs if desired)
 // -----------------------------------------------------
 app.use((req, _res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  // keep this lightweight; morgan or fallback already logs basic info
+  // eslint-disable-next-line no-console
+  console.debug(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
   next();
 });
 
@@ -99,6 +174,7 @@ async function reflectionsUniquePerMonthMiddleware(
 
   if (!employee_id || !month_key) return next();
 
+  // Normalize to YYYY-MM
   month_key = month_key.slice(0, 7);
 
   try {
@@ -117,9 +193,7 @@ async function reflectionsUniquePerMonthMiddleware(
     next();
   } catch (err) {
     console.error("Error checking existing reflection:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to validate reflection uniqueness." });
+    return res.status(500).json({ error: "Failed to validate reflection uniqueness." });
   }
 }
 
@@ -224,7 +298,7 @@ async function ensureUniqueIndex() {
 // -----------------------------------------------------
 // START SERVER
 // -----------------------------------------------------
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 (async () => {
   try {

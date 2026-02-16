@@ -1,9 +1,11 @@
 import { Routes, Route } from "react-router-dom";
 
 import Layout from "./components/Layout";
+import RequireAuth from "./components/RequireAuth";
 
+import Login from "./pages/Login";
 import SubmitReflection from "./pages/SubmitReflection";
-import ReflectionsVote from "./pages/ReflectionsVote";   // ← NEW integrated page
+import ReflectionsVote from "./pages/ReflectionsVote";
 import Results from "./pages/Results";
 import Admin from "./pages/Admin";
 import Adjudication from "./pages/Adjudication";
@@ -14,25 +16,89 @@ export default function App() {
   return (
     <Layout>
       <Routes>
-        {/* Default route */}
-        <Route path="/" element={<SubmitReflection />} />
+        {/* Public route */}
+        <Route path="/login" element={<Login />} />
 
-        {/* Submit Reflection */}
-        <Route path="/submit-reflection" element={<SubmitReflection />} />
+        {/* Default route → redirect to login */}
+        <Route
+          path="/"
+          element={
+            <RequireAuth roles={["Employee", "Adjudicator", "Admin"]}>
+              <SubmitReflection />
+            </RequireAuth>
+          }
+        />
 
-        {/* NEW: Combined Reflections + Voting page */}
-        <Route path="/reflections-vote" element={<ReflectionsVote />} />
+        {/* Employee-only */}
+        <Route
+          path="/submit-reflection"
+          element={
+            <RequireAuth roles={["Employee"]}>
+              <SubmitReflection />
+            </RequireAuth>
+          }
+        />
 
-        {/* Results */}
-        <Route path="/results" element={<Results />} />
-        <Route path="/final-results" element={<FinalResults />} />
+        {/* Employee-only: reflections + voting */}
+        <Route
+          path="/reflections-vote"
+          element={
+            <RequireAuth roles={["Employee"]}>
+              <ReflectionsVote />
+            </RequireAuth>
+          }
+        />
 
-        {/* Admin */}
-        <Route path="/admin" element={<Admin />} />
+        {/* Results (everyone logged in can view) */}
+        <Route
+          path="/results"
+          element={
+            <RequireAuth roles={["Employee", "Adjudicator", "Admin"]}>
+              <Results />
+            </RequireAuth>
+          }
+        />
 
-        {/* Adjudication */}
-        <Route path="/adjudication" element={<Adjudication />} />
-        <Route path="/adjudication-panel" element={<AdjudicationPanel />} />
+        <Route
+          path="/final-results"
+          element={
+            <RequireAuth roles={["Employee", "Adjudicator", "Admin"]}>
+              <FinalResults />
+            </RequireAuth>
+          }
+        />
+
+        {/* Admin-only */}
+        <Route
+          path="/admin"
+          element={
+            <RequireAuth roles={["Admin"]}>
+              <Admin />
+            </RequireAuth>
+          }
+        />
+
+        {/* Adjudicator + Admin */}
+        <Route
+          path="/adjudication"
+          element={
+            <RequireAuth roles={["Adjudicator", "Admin"]}>
+              <Adjudication />
+            </RequireAuth>
+          }
+        />
+
+        <Route
+          path="/adjudication-panel"
+          element={
+            <RequireAuth roles={["Adjudicator", "Admin"]}>
+              <AdjudicationPanel />
+            </RequireAuth>
+          }
+        />
+
+        {/* Fallback */}
+        <Route path="*" element={<Login />} />
       </Routes>
     </Layout>
   );
