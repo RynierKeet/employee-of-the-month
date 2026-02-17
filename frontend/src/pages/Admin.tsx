@@ -19,7 +19,7 @@ export default function Admin() {
 
   // Load employees
   const loadEmployees = () => {
-    fetch("http://localhost:3000/employees")
+    fetch("/employees", { credentials: "include" })
       .then((res) => res.json())
       .then((data: Employee[]) => setEmployees(data))
       .catch(() => setMessage("Failed to load employees"));
@@ -38,8 +38,9 @@ export default function Admin() {
       return;
     }
 
-    fetch("http://localhost:3000/employees", {
+    fetch("/employees", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email, role }),
     })
@@ -61,22 +62,24 @@ export default function Admin() {
   const deleteEmployee = (id: number) => {
     if (!confirm("Delete this employee?")) return;
 
-    fetch(`http://localhost:3000/employees/${id}`, {
+    fetch(`/employees/${id}`, {
       method: "DELETE",
+      credentials: "include",
     })
       .then((res) => res.json())
       .then(() => loadEmployees())
       .catch(() => setMessage("Failed to delete employee."));
   };
 
-  // Reset month (still allowed)
+  // Reset month
   const resetMonth = async () => {
     setMessage("");
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:3000/admin/reset", {
+      const res = await fetch("/admin/reset", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ month_key: month }),
       });

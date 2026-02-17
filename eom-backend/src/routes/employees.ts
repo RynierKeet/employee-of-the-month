@@ -12,13 +12,19 @@ const router = Router();
 // -----------------------------------------------------
 router.get("/", async (req, res) => {
   const user = await getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: "Not logged in" });
 
-  const identity = getIdentity(user);
+  if (!user) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
+
+  // Debug: confirm session user identity
+  console.log("SESSION USER (employees route):", user);
+
+  const identity = getIdentity(user); // "Admin" | "Adjudicator" | "Employee"
 
   try {
     // Admins + adjudicators see all employees
-    if (user.is_admin || identity === "Adjudicator") {
+    if (identity === "Admin" || identity === "Adjudicator") {
       const rows = await db.all(
         "SELECT id, name, email, is_admin, is_adjudicator FROM employees ORDER BY name"
       );
@@ -30,6 +36,16 @@ router.get("/", async (req, res) => {
       "SELECT id, name, email, is_admin, is_adjudicator FROM employees WHERE id = ?",
       [user.id]
     );
+
+    // 🔥 CRITICAL FIX:
+    // If the employee is not found, return an empty array instead of [null]
+    if (!me) {
+      console.warn(
+        "WARNING: Session user ID does not match any employee row. ID:",
+        user.id
+      );
+      return res.json([]);
+    }
 
     return res.json([me]);
   } catch (err) {

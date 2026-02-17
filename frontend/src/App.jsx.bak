@@ -1,20 +1,22 @@
-// src/App.tsx
+// src/App.jsx
 import React, { Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import Layout from "./components/Layout";
-import RequireAuth from "./components/RequireAuth";
-import Login from "./pages/Login";
-const ChangePassword = React.lazy(() => import("./pages/ChangePassword"));
-import SubmitReflection from "./pages/SubmitReflection";
+import Layout from "./components/Layout";            // layout with nav
+import RequireAuth from "./components/RequireAuth";  // your auth guard
+import Login from "./pages/Login.jsx";
+const ChangePassword = React.lazy(() => import("./pages/ChangePassword.jsx"));
+import SubmitReflection from "./pages/SubmitReflection.jsx";
+import Vote from "./pages/Vote.jsx";
+import ViewReflections from "./pages/ViewReflections.jsx";
+import Results from "./pages/Results.jsx";
+import Admin from "./pages/Admin.jsx";
 
 export default function App() {
   return (
     <Routes>
-      {/* Opening page */}
+      {/* Opening / public pages */}
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
-
-      {/* Change password (public) */}
       <Route
         path="/change-password"
         element={
@@ -35,10 +37,13 @@ export default function App() {
       >
         <Route index element={<Navigate to="submit-reflection" replace />} />
         <Route path="submit-reflection" element={<SubmitReflection />} />
-        {/* add other protected routes here */}
+        <Route path="vote" element={<Vote />} />
+        <Route path="view-reflections" element={<ViewReflections />} />
+        <Route path="results" element={<Results />} />
+        <Route path="admin" element={<Admin />} />
       </Route>
 
-      {/* Fallback to login for anything else */}
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );

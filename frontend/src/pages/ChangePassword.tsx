@@ -1,121 +1,153 @@
 // src/pages/ChangePassword.tsx
 import React, { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useAuth } from "../auth";
 
-type Props = {
-  onDone?: () => void;
-};
-
-export default function ChangePassword({ onDone }: Props) {
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [loading, setLoading] = useState(false);
+export default function ChangePassword() {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const { refresh } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as any)?.from?.pathname ?? "/";
+
+  function validatePassword(pw: string) {
+    if (!pw || pw.length < 8) {
+      return "Password must be at least 8 characters.";
+    }
+    if (!/[A-Z]/.test(pw)) {
+      return "Password must include at least one uppercase letter.";
+    }
+    if (!/[a-z]/.test(pw)) {
+      return "Password must include at least one lowercase letter.";
+    }
+    if (!/[0-9]/.test(pw)) {
+      return "Password must include at least one number.";
+    }
+    if (!/[!@#$%^&*()_\-+=[\]{};:'"\\|,.<>/?]/.test(pw)) {
+      return "Password must include at least one special character.";
+    }
+    return null;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setSuccess(null);
 
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      setError("Please fill in all fields.");
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setError("New password and confirmation do not match.");
+    if (password !== confirm) {
+      setError("Passwords must match.");
       return;
     }
 
-    setLoading(true);
+    const validationError = validatePassword(password);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    setSaving(true);
+
     try {
       const res = await fetch("/auth/change-password", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          currentPassword,
-          newPassword,
+          currentPassword: undefined, // endpoint expects currentPassword for some flows; backend accepts session user
+          newPassword: password,
+          confirmPassword: confirm,
         }),
       });
 
       if (!res.ok) {
-        const payload = await res.json().catch(() => ({ error: "Failed to change password" }));
-        setError(payload.error || "Failed to change password");
-        return;
+        // try to parse JSON error, fallback to text
+        let msg = "Failed to change password";
+        try {
+          const json = await res.json();
+          msg = json?.error ?? json?.message ?? msg;
+        } catch {
+          const txt = await res.text().catch(() => "");
+          if (txt) msg = txt;
+        }
+        throw new Error(msg);
       }
 
-      setSuccess("Password updated successfully.");
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
+      // Refresh auth state so must_change_password clears
+      try {
+        await refresh();
+      } catch (refreshErr) {
+        // non-fatal: continue to navigate even if refresh fails
+        console.warn("Failed to refresh auth after password change", refreshErr);
+      }
 
-      // Give the server a moment to update session flags, then notify parent to refresh auth state
-      setTimeout(() => {
-        if (onDone) onDone();
-      }, 250);
-    } catch (err) {
-      setError("Network error while changing password.");
-      // eslint-disable-next-line no-console
-      console.error("ChangePassword error:", err);
+      // Navigate to original destination (or root)
+      navigate(from, { replace: true });
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to change password");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
   return (
-    <div style={{ maxWidth: 480, margin: "24px auto", padding: 16 }}>
-      <h2>Change Password</h2>
+    <div className="max-w-md mx-auto px-4 py-8">
+      <h2 className="text-2xl font-semibold mb-4">Change Password</h2>
 
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 6 }}>Current password</label>
+      <form onSubmit={handleSubmit} className="space-y-4" aria-describedby={error ? "change-password-error" : undefined}>
+        <div>
+          <label htmlFor="new-password" className="block text-sm font-medium mb-1">
+            New password
+          </label>
           <input
+            id="new-password"
+            name="new-password"
             type="password"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            style={{ width: "100%", padding: 8 }}
-            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full border px-3 py-2 rounded"
+            autoComplete="new-password"
+            disabled={saving}
+            aria-required
           />
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 6 }}>New password</label>
+        <div>
+          <label htmlFor="confirm-password" className="block text-sm font-medium mb-1">
+            Confirm password
+          </label>
           <input
+            id="confirm-password"
+            name="confirm-password"
             type="password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            style={{ width: "100%", padding: 8 }}
-            required
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            className="w-full border px-3 py-2 rounded"
+            autoComplete="new-password"
+            disabled={saving}
+            aria-required
           />
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 6 }}>Confirm new password</label>
-          <input
-            type="password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            style={{ width: "100%", padding: 8 }}
-            required
-          />
+        <div className="text-sm text-gray-600">
+          Password must be at least 8 characters and include uppercase, lowercase, number, and special character.
         </div>
 
         {error && (
-          <div style={{ color: "crimson", marginBottom: 12 }}>
+          <div id="change-password-error" role="alert" className="text-red-600">
             {error}
           </div>
         )}
 
-        {success && (
-          <div style={{ color: "green", marginBottom: 12 }}>
-            {success}
-          </div>
-        )}
-
         <div>
-          <button type="submit" disabled={loading} style={{ padding: "8px 16px" }}>
-            {loading ? "Saving…" : "Save new password"}
+          <button
+            type="submit"
+            disabled={saving}
+            className="bg-crgBlue text-white px-4 py-2 rounded disabled:opacity-60"
+            aria-disabled={saving}
+          >
+            {saving ? "Saving…" : "Change password"}
           </button>
         </div>
       </form>

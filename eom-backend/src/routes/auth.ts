@@ -57,7 +57,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const normalizedEmail = (String(email) || "").trim().toLowerCase();
 
-    // Query DB (use normalized lookup to avoid case/whitespace mismatches)
     const query = `
       SELECT id, name, email, password_hash, is_admin, is_adjudicator, must_change_password
       FROM employees
@@ -65,11 +64,9 @@ router.post("/login", async (req: Request, res: Response) => {
       LIMIT 1
     `;
     const raw = await db.pool.query(query, [normalizedEmail]);
-    // Normalize different client return shapes (mysql2 returns [rows, fields])
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
 
     if (!rows || rows.length === 0) {
-      // Do not reveal whether email exists
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
@@ -86,27 +83,34 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const role = deriveRole(userRow);
 
-    // Ensure session exists
+    // Cast session once so TS stops complaining
     const session = req.session as any;
     if (!session) {
       return res.status(500).json({ error: "Session not initialized" });
     }
 
-    // Store minimal, non-sensitive user info in session
     const sessionUser: SessionUser = {
       id: userRow.id,
       name: userRow.name || undefined,
       email: userRow.email,
       role,
     };
+
     session.user = sessionUser;
 
-    // If the account requires a password change, inform the client
-    if (userRow.must_change_password) {
-      return res.json({ success: true, mustChangePassword: true, user: sessionUser });
-    }
+    // 🔥 CRITICAL FIX: Save session before responding
+    session.save((err: any) => {
+      if (err) {
+        console.error("Session save error:", err);
+        return res.status(500).json({ error: "Failed to save session" });
+      }
 
-    return res.json({ success: true, user: sessionUser });
+      if (userRow.must_change_password) {
+        return res.json({ success: true, mustChangePassword: true, user: sessionUser });
+      }
+
+      return res.json({ success: true, user: sessionUser });
+    });
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Login failed" });
@@ -115,10 +119,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
 /* -----------------------------------------
    POST /auth/change-password
-   - Accepts { currentPassword, newPassword, confirmPassword }
-   - Requires an authenticated session user
-   - Validates current password, hashes new password, updates DB
-   - Clears must_change_password flag
 ----------------------------------------- */
 router.post("/change-password", async (req: Request, res: Response) => {
   try {
@@ -139,12 +139,10 @@ router.post("/change-password", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "New password and confirmation do not match" });
     }
 
-    // Basic password strength check (adjust to your policy)
     if (String(newPassword).length < 8) {
       return res.status(400).json({ error: "New password must be at least 8 characters" });
     }
 
-    // Fetch current hash for the logged-in user by id
     const q = `SELECT password_hash FROM employees WHERE id = ? LIMIT 1`;
     const raw = await db.pool.query(q, [sessionUser.id]);
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
@@ -163,11 +161,9 @@ router.post("/change-password", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Current password is incorrect" });
     }
 
-    // Hash new password
     const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
     const newHash = await bcrypt.hash(String(newPassword), saltRounds);
 
-    // Update DB: set new hash and clear must_change_password
     await db.pool.query(
       `UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?`,
       [newHash, sessionUser.id]
@@ -182,11 +178,9 @@ router.post("/change-password", async (req: Request, res: Response) => {
 
 /* -----------------------------------------
    POST /auth/logout
-   - Destroys session and clears cookie
 ----------------------------------------- */
 router.post("/logout", (req: Request, res: Response) => {
   try {
-    // cast session to any so TypeScript recognizes destroy exists
     (req.session as any)?.destroy((err: any) => {
       if (err) {
         console.error("Logout error:", err);

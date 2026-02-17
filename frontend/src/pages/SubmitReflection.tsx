@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+// src/pages/SubmitReflections.tsx
+import React, { useEffect, useRef, useState } from "react";
 import { InfoIcon } from "../components/InfoIcon";
 import { Modal } from "../components/Modal";
 import { ReflectionGuidelines } from "../components/ReflectionGuidelines";
@@ -19,35 +20,44 @@ interface Reflection {
 export default function SubmitReflections() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeId, setEmployeeId] = useState<number | "">("");
-  const [month, setMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // YYYY-MM
+  const [month, setMonth] = useState<string>(new Date().toISOString().slice(0, 7));
   const [reflectionText, setReflectionText] = useState<string>("");
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState<"success" | "error" | "warning" | "info">(
-    "info"
-  );
+  const [messageType, setMessageType] =
+    useState<"success" | "error" | "warning" | "info">("info");
 
   const [guidelinesOpen, setGuidelinesOpen] = useState(false);
 
-  // Adjudicators must NOT appear in the reflection dropdown
   const EXCLUDED_IDS = [7, 10];
 
-  // Existing-submission tracking
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [existingReflection, setExistingReflection] = useState<Reflection | null>(null);
   const [checkingExisting, setCheckingExisting] = useState(false);
 
-  // Safe JSON fetch helper (logs non-JSON responses)
-  async function safeFetchJson(url: string) {
+  const checkTimer = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  // Safe JSON fetch helper
+  async function safeFetchJson(url: string, opts: RequestInit = {}) {
     try {
-      const res = await fetch(url);
-      const text = await res.text();
+      const res = await fetch(url, { credentials: "include", ...opts });
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      const text = await res.text().catch(() => "");
+
+      if (!ct.includes("application/json")) {
+        console.warn("safeFetchJson: expected JSON but got", ct, "for", url);
+        if (import.meta.env.DEV) {
+          console.debug("safeFetchJson response preview:", text.slice(0, 1000));
+        }
+        return null;
+      }
+
       try {
         return JSON.parse(text);
       } catch (err) {
-        console.error("safeFetchJson: non-JSON response for", url, "status:", res.status);
-        console.error("response preview:", text.slice(0, 1000));
+        console.error("safeFetchJson: JSON parse error for", url, err);
         return null;
       }
     } catch (err) {
@@ -56,68 +66,62 @@ export default function SubmitReflections() {
     }
   }
 
+  // Load employees
   useEffect(() => {
-    let mounted = true;
-    safeFetchJson("http://localhost:3000/employees")
-      .then((data) => {
-        if (!mounted) return;
-        const list = Array.isArray(data)
-          ? data
-          : data && Array.isArray((data as any).employees)
-          ? (data as any).employees
-          : [];
+    mountedRef.current = true;
 
-        if (list.length === 0) {
-          setMessage("No employees returned from server.");
-          setMessageType("error");
-        }
+    (async () => {
+      const data = await safeFetchJson(`/employees`);
+      if (!mountedRef.current) return;
 
-        setEmployees(list);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setMessage("Failed to load employees.");
+      const list = Array.isArray(data)
+        ? data
+        : data && Array.isArray((data as any).employees)
+        ? (data as any).employees
+        : [];
+
+      if (list.length === 0) {
+        setMessage("No employees returned from server.");
         setMessageType("error");
-      });
+      } else {
+        setMessage("");
+      }
+
+      setEmployees(list);
+    })();
 
     return () => {
-      mounted = false;
+      mountedRef.current = false;
     };
   }, []);
 
-  // Check whether the selected employee already submitted for the selected month
+  // Check existing reflection (debounced)
   useEffect(() => {
     setAlreadySubmitted(false);
     setExistingReflection(null);
     setMessage("");
     setMessageType("info");
 
-    if (!employeeId) return;
-    if (!month) return;
+    if (!employeeId || !month) return;
 
-    let cancelled = false;
-    const check = async () => {
+    if (checkTimer.current) {
+      window.clearTimeout(checkTimer.current);
+      checkTimer.current = null;
+    }
+
+    checkTimer.current = window.setTimeout(async () => {
       setCheckingExisting(true);
-      const url = `http://localhost:3000/reflections?employee_id=${employeeId}&month=${encodeURIComponent(
-        month
-      )}`;
-
+      const url = `/reflections?employee_id=${employeeId}&month=${encodeURIComponent(month)}`;
       const data = await safeFetchJson(url);
-      if (cancelled) return;
       setCheckingExisting(false);
 
       if (!data) {
-        // Unexpected response; treat as no existing but log
         console.warn("Unexpected response when checking existing reflection:", data);
         setAlreadySubmitted(false);
         setExistingReflection(null);
         return;
       }
 
-      // Backend might return:
-      // - an array: [ ... ]
-      // - { reflections: [...] }
-      // - { submitted: true, existing: {...} }
       if (Array.isArray(data) && data.length > 0) {
         setAlreadySubmitted(true);
         setExistingReflection(data[0] as Reflection);
@@ -144,15 +148,15 @@ export default function SubmitReflections() {
         return;
       }
 
-      // No existing reflection found
       setAlreadySubmitted(false);
       setExistingReflection(null);
-    };
-
-    check();
+    }, 300);
 
     return () => {
-      cancelled = true;
+      if (checkTimer.current) {
+        window.clearTimeout(checkTimer.current);
+        checkTimer.current = null;
+      }
     };
   }, [employeeId, month]);
 
@@ -194,9 +198,10 @@ export default function SubmitReflections() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:3000/reflections", {
+      const res = await fetch(`/reflections`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
           employee_id: employeeId,
           month_key: month,
@@ -204,7 +209,6 @@ export default function SubmitReflections() {
         }),
       });
 
-      // Handle duplicate (server-side) response
       if (res.status === 409) {
         const err = await res.json().catch(() => null);
         setMessage(err?.error || "You have already submitted a reflection for this month.");
@@ -216,10 +220,10 @@ export default function SubmitReflections() {
         return;
       }
 
-      const data = await res.json().catch(() => null);
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
 
       if (res.ok && data) {
-        // Accept multiple possible shapes from backend
         const created = data.id ? data : (data as any).reflection ?? data;
         setMessage("Reflection submitted successfully.");
         setMessageType("success");
@@ -241,7 +245,9 @@ export default function SubmitReflections() {
     }
   };
 
-  const allowedReflectionSubmitters = employees.filter((emp) => !EXCLUDED_IDS.includes(emp.id));
+  const allowedReflectionSubmitters = employees.filter(
+    (emp) => !EXCLUDED_IDS.includes(emp.id)
+  );
 
   const messageColor =
     messageType === "error"
@@ -260,15 +266,19 @@ export default function SubmitReflections() {
 
       {message && <p className={`text-sm font-medium ${messageColor}`}>{message}</p>}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-6" aria-live="polite">
         {/* Name */}
         <div className="space-y-2">
-          <label className="block text-sm font-medium text-slate-800">Your Name</label>
+          <label htmlFor="employee" className="block text-sm font-medium text-slate-800">
+            Your Name
+          </label>
           <select
+            id="employee"
             value={employeeId}
             onChange={(e) => setEmployeeId(Number(e.target.value))}
             className="w-full border border-slate-300 rounded-card px-3 py-2 focus:outline-none focus:ring-2 focus:ring-crgGold"
             required
+            aria-required
           >
             <option value="">Select your name</option>
             {allowedReflectionSubmitters.map((emp) => (
@@ -281,8 +291,11 @@ export default function SubmitReflections() {
 
         {/* Month */}
         <div className="space-y-2">
-          <label className="block text-sm font-medium text-slate-800">Month</label>
+          <label htmlFor="month" className="block text-sm font-medium text-slate-800">
+            Month
+          </label>
           <input
+            id="month"
             type="month"
             value={month}
             onChange={(e) => setMonth(e.target.value)}
@@ -299,19 +312,24 @@ export default function SubmitReflections() {
             <p className="text-sm font-semibold text-slate-900">Existing submission</p>
             <p className="text-sm text-slate-700 mt-2">{existingReflection.reflection_text}</p>
             {existingReflection.created_at && (
-              <p className="text-xs text-slate-500 mt-1">Submitted: {existingReflection.created_at}</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Submitted: {existingReflection.created_at}
+              </p>
             )}
           </div>
         ) : null}
 
-        {/* Reflection + Info Icon */}
+        {/* Reflection */}
         <div className="space-y-2">
-          <div className="flex items-center">
-            <label className="block text-sm font-medium text-slate-800">Reflection</label>
+          <div className="flex items-center gap-2">
+            <label htmlFor="reflection" className="block text-sm font-medium text-slate-800">
+              Reflection
+            </label>
             <InfoIcon onClick={() => setGuidelinesOpen(true)} title="Reflection Guidelines" />
           </div>
 
           <textarea
+            id="reflection"
             value={reflectionText}
             onChange={(e) => setReflectionText(e.target.value)}
             rows={6}

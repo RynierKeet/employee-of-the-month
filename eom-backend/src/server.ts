@@ -21,64 +21,56 @@ dotenv.config();
 const app = express();
 
 // Use require for connect-sqlite3 to avoid missing type declarations in TS.
-// Treat the store as `any` for middleware wiring.
 const SQLiteStore: any = require("connect-sqlite3")(session);
 
 // -----------------------------------------------------
-// Ensure session directory exists (before session store is created)
+// Ensure session directory exists
 // -----------------------------------------------------
 const sessionDir = path.resolve(process.cwd(), "var");
 try {
   fs.mkdirSync(sessionDir, { recursive: true });
 } catch (err) {
   console.error("Could not create session directory:", err);
-  // continue so the error is visible in logs; session store will fail loudly if unusable
 }
 
 // -----------------------------------------------------
-// RATE LIMITER: require dynamically so TS/Node won't fail if package isn't installed
-// If express-rate-limit is not installed, we fall back to a no-op middleware.
+// RATE LIMITER
 // -----------------------------------------------------
 let createRateLimit: any = null;
 try {
   createRateLimit = require("express-rate-limit");
 } catch (err) {
   createRateLimit = null;
-  console.warn(
-    "express-rate-limit not installed; login rate limiting disabled. Install with: npm install express-rate-limit"
-  );
+  console.warn("express-rate-limit not installed; login rate limiting disabled.");
 }
 
 const loginLimiter =
   createRateLimit
     ? createRateLimit({
-        windowMs: 15 * 60 * 1000, // 15 minutes
-        max: 10, // limit each IP to 10 requests per windowMs
+        windowMs: 15 * 60 * 1000,
+        max: 10,
         standardHeaders: true,
         legacyHeaders: false,
       })
     : ((req: express.Request, res: express.Response, next: express.NextFunction) => next());
 
 // -----------------------------------------------------
-// LOGGER: require morgan dynamically; fallback to simple logger if missing
+// LOGGER
 // -----------------------------------------------------
 let morganMiddleware: any = null;
 try {
-  // require so missing types won't break compilation/runtime if not installed
   const morgan = require("morgan");
   morganMiddleware = morgan("dev");
 } catch (err) {
   morganMiddleware = (req: express.Request, _res: express.Response, next: express.NextFunction) => {
-    // minimal structured log fallback
-    // eslint-disable-next-line no-console
     console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
     next();
   };
-  console.warn("morgan not installed; using simple console logger. Install with: npm install morgan");
+  console.warn("morgan not installed; using simple console logger.");
 }
 
 // -----------------------------------------------------
-// Require SESSION_SECRET (fail fast in production)
+// SESSION SECRET
 // -----------------------------------------------------
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET && process.env.NODE_ENV === "production") {
@@ -86,25 +78,31 @@ if (!SESSION_SECRET && process.env.NODE_ENV === "production") {
   process.exit(1);
 }
 if (!SESSION_SECRET) {
-  console.warn("SESSION_SECRET not set — using dev fallback. Set SESSION_SECRET in production.");
+  console.warn("SESSION_SECRET not set — using dev fallback.");
 }
 
 // -----------------------------------------------------
 // CORE MIDDLEWARE
 // -----------------------------------------------------
-app.use(cors({ origin: true, credentials: true }));
+
+// ⭐ CRITICAL FIX: Explicit CORS origin for cookie-based auth
+app.use(
+  cors({
+    origin: "http://localhost:5175",
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(morganMiddleware);
 
-// Mount the limiter specifically on the login endpoint before authRouter is mounted
+// Mount the limiter specifically on the login endpoint
 app.use("/auth/login", loginLimiter);
 
 // -----------------------------------------------------
-// SESSION MIDDLEWARE (CRITICAL)
+// SESSION MIDDLEWARE
 // -----------------------------------------------------
-// Lightweight SQLite-backed store for local development so sessions survive restarts.
-// Replace with Redis or another shared store in production and set cookie.secure = true.
 const isProd = process.env.NODE_ENV === "production";
 
 app.use(
@@ -114,20 +112,18 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: isProd, // set true only behind HTTPS in production
+      secure: isProd, // true only behind HTTPS in production
       httpOnly: true,
-      sameSite: "lax",
+      sameSite: "lax", // correct for local dev
       maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
     },
   })
 );
 
 // -----------------------------------------------------
-// SIMPLE REQUEST LOGGER (additional to morgan for structured logs if desired)
+// SIMPLE REQUEST LOGGER
 // -----------------------------------------------------
 app.use((req, _res, next) => {
-  // keep this lightweight; morgan or fallback already logs basic info
-  // eslint-disable-next-line no-console
   console.debug(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
   next();
 });
@@ -174,7 +170,6 @@ async function reflectionsUniquePerMonthMiddleware(
 
   if (!employee_id || !month_key) return next();
 
-  // Normalize to YYYY-MM
   month_key = month_key.slice(0, 7);
 
   try {
