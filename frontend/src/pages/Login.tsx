@@ -6,16 +6,14 @@ import { useNavigate, useLocation } from "react-router-dom";
  * Login page
  *
  * Flow:
- * 1. Ensure employee record exists by POST /employees (creates if missing).
- * 2. POST /auth/login with credentials included so the server can set a session cookie.
- * 3. Poll /auth/me until the session is recognized (works around cookie race).
- * 4. If server indicates first-time user (must_change_password), redirect to /change-password.
- * 5. On success, navigate to the original destination.
+ * 1. POST /auth/login with credentials included so the server can set a session cookie.
+ * 2. Poll /auth/me until the session is recognized (works around cookie race).
+ * 3. If server indicates first-time user (must_change_password), redirect to /change-password.
+ * 4. On success, navigate to the original destination.
  *
  * Notes:
- * - This component assumes your backend exposes POST /employees to create an employee
- *   and POST /auth/login + GET /auth/me for authentication.
  * - All fetches use credentials: "include" so HttpOnly session cookies are accepted/sent.
+ * - Employee creation is now Admin-only (Option B), so auto-create logic has been removed.
  */
 
 export default function Login() {
@@ -44,33 +42,6 @@ export default function Login() {
     return { ok: false, json: null };
   }
 
-  // Ensure employee exists in the employees table (backend should create if missing)
-  async function ensureEmployee(emailAddress: string) {
-    try {
-      // POST /employees should create an employee when given minimal data.
-      // Adjust payload to match your backend's create employee contract.
-      const res = await fetch("/employees", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: emailAddress }),
-      });
-
-      // If backend returns 409 or similar for existing employee, treat as success.
-      if (res.ok || res.status === 409) {
-        return true;
-      }
-
-      // If backend returns validation error, surface it.
-      const txt = await res.text().catch(() => "");
-      throw new Error(txt || `Failed to ensure employee (${res.status})`);
-    } catch (err) {
-      // Non-fatal: we still attempt login, but surface a warning to the user.
-      console.warn("ensureEmployee failed:", err);
-      return false;
-    }
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -88,10 +59,7 @@ export default function Login() {
     setSubmitting(true);
 
     try {
-      // 1) Ensure employee exists (best-effort)
-      await ensureEmployee(trimmedEmail);
-
-      // 2) Attempt login
+      // 1) Attempt login
       const res = await fetch("/auth/login", {
         method: "POST",
         credentials: "include", // critical so browser accepts/sends session cookie
@@ -119,11 +87,10 @@ export default function Login() {
         return;
       }
 
-      // 3) Poll /auth/me until session is usable
+      // 2) Poll /auth/me until session is usable
       const poll = await pollForSession(12, 300);
       if (poll.ok) {
         // Full reload ensures cookie is attached and app boots authenticated.
-        // Use navigate if you prefer SPA navigation, but reload is more robust for cookie races.
         window.location.href = from;
         return;
       }
@@ -148,12 +115,20 @@ export default function Login() {
       </p>
 
       {error && (
-        <div role="alert" className="mb-4 rounded px-3 py-2 text-white bg-red-600" aria-live="assertive">
+        <div
+          role="alert"
+          className="mb-4 rounded px-3 py-2 text-white bg-red-600"
+          aria-live="assertive"
+        >
           {error}
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4" aria-describedby={error ? "login-error" : undefined}>
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-4"
+        aria-describedby={error ? "login-error" : undefined}
+      >
         <div>
           <label htmlFor="email" className="block text-sm font-medium mb-1">
             Email

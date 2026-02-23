@@ -25,16 +25,17 @@ export interface SessionUser {
 
 /* -----------------------------------------
    GET /auth/me
-   - Returns the current session user if authenticated
 ----------------------------------------- */
 router.get("/me", (req: Request, res: Response) => {
   try {
     const session = req.session as any;
     const user: SessionUser | undefined = session?.user;
+
     if (!user) {
       return res.status(401).json({ error: "Not authenticated" });
     }
-    return res.json({ success: true, user });
+
+    return res.json(user);
   } catch (err) {
     console.error("GET /auth/me error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -43,9 +44,6 @@ router.get("/me", (req: Request, res: Response) => {
 
 /* -----------------------------------------
    POST /auth/login
-   - Accepts { email, password }
-   - Normalizes email, looks up user, compares bcrypt hash
-   - Sets minimal session.user on success
 ----------------------------------------- */
 router.post("/login", async (req: Request, res: Response) => {
   try {
@@ -83,7 +81,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const role = deriveRole(userRow);
 
-    // Cast session once so TS stops complaining
     const session = req.session as any;
     if (!session) {
       return res.status(500).json({ error: "Session not initialized" });
@@ -98,7 +95,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
     session.user = sessionUser;
 
-    // 🔥 CRITICAL FIX: Save session before responding
     session.save((err: any) => {
       if (err) {
         console.error("Session save error:", err);
@@ -111,6 +107,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
       return res.json({ success: true, user: sessionUser });
     });
+
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Login failed" });
@@ -119,6 +116,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
 /* -----------------------------------------
    POST /auth/change-password
+   Updated to allow first-time password change
 ----------------------------------------- */
 router.post("/change-password", async (req: Request, res: Response) => {
   try {
@@ -131,7 +129,8 @@ router.post("/change-password", async (req: Request, res: Response) => {
 
     const { currentPassword, newPassword, confirmPassword } = req.body ?? {};
 
-    if (!currentPassword || !newPassword || !confirmPassword) {
+    // Validate new password fields first
+    if (!newPassword || !confirmPassword) {
       return res.status(400).json({ error: "All password fields are required" });
     }
 
@@ -143,7 +142,8 @@ router.post("/change-password", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "New password must be at least 8 characters" });
     }
 
-    const q = `SELECT password_hash FROM employees WHERE id = ? LIMIT 1`;
+    // Fetch user row
+    const q = `SELECT password_hash, must_change_password FROM employees WHERE id = ? LIMIT 1`;
     const raw = await db.pool.query(q, [sessionUser.id]);
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
 
@@ -152,24 +152,31 @@ router.post("/change-password", async (req: Request, res: Response) => {
     }
 
     const userRow = rows[0];
-    if (!userRow.password_hash) {
-      return res.status(400).json({ error: "No password set for this account" });
+
+    // If NOT first-time password change, require currentPassword
+    if (userRow.must_change_password !== 1) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: "Current password is required" });
+      }
+
+      const currentValid = await bcrypt.compare(String(currentPassword), userRow.password_hash);
+      if (!currentValid) {
+        return res.status(401).json({ error: "Current password is incorrect" });
+      }
     }
 
-    const currentValid = await bcrypt.compare(String(currentPassword), userRow.password_hash);
-    if (!currentValid) {
-      return res.status(401).json({ error: "Current password is incorrect" });
-    }
-
+    // Hash new password
     const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
     const newHash = await bcrypt.hash(String(newPassword), saltRounds);
 
+    // Update DB
     await db.pool.query(
       `UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?`,
       [newHash, sessionUser.id]
     );
 
     return res.json({ success: true });
+
   } catch (err) {
     console.error("Change password error:", err);
     return res.status(500).json({ error: "Failed to change password" });

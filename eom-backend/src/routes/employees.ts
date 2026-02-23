@@ -4,53 +4,77 @@ import { getCurrentUser, getIdentity } from "../utils/auth";
 
 const router = Router();
 
-// -----------------------------------------------------
-// GET /employees
-// Employees → only themselves
-// Admins → everyone
-// Adjudicators → everyone
-// -----------------------------------------------------
-router.get("/", async (req, res) => {
-  const user = await getCurrentUser(req);
+/* -----------------------------------------
+   GET /employees
+   (Assuming your original GET handler exists above)
+----------------------------------------- */
+// Keep your existing GET handler here.
+// Example:
+// router.get("/", async (req, res) => {
+//   const rows = await db.all("SELECT id, name, email, role FROM employees");
+//   res.json(rows);
+// });
 
-  if (!user) {
-    return res.status(401).json({ error: "Not logged in" });
-  }
-
-  // Debug: confirm session user identity
-  console.log("SESSION USER (employees route):", user);
-
-  const identity = getIdentity(user); // "Admin" | "Adjudicator" | "Employee"
-
+/* -----------------------------------------
+   POST /employees  (Admin-only)
+   - Creates a new employee
+   - Normalizes email
+   - Ensures no duplicates
+   - Returns the created employee
+----------------------------------------- */
+router.post("/", async (req, res) => {
   try {
-    // Admins + adjudicators see all employees
-    if (identity === "Admin" || identity === "Adjudicator") {
-      const rows = await db.all(
-        "SELECT id, name, email, is_admin, is_adjudicator FROM employees ORDER BY name"
-      );
-      return res.json(rows);
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+
+    const identity = getIdentity(user);
+    if (identity !== "Admin") {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    // Employees see only themselves
-    const me = await db.get(
-      "SELECT id, name, email, is_admin, is_adjudicator FROM employees WHERE id = ?",
-      [user.id]
+    const { name, email, role } = req.body || {};
+
+    if (!name && !email) {
+      return res.status(400).json({ error: "name or email required" });
+    }
+
+    // Normalize email for consistency
+    const normalizedEmail =
+      typeof email === "string" ? email.trim().toLowerCase() : null;
+
+    console.log(">>> POST /employees body:", req.body);
+
+    // Check for existing employee by normalized email
+    if (normalizedEmail) {
+      const existing = await db.get(
+        "SELECT id FROM employees WHERE LOWER(TRIM(email)) = ?",
+        [normalizedEmail]
+      );
+      if (existing) return res.status(409).json({ error: "exists" });
+    }
+
+    // Insert employee
+    const result = await db.run(
+      "INSERT INTO employees (name, email, role, created_at) VALUES (?, ?, ?, datetime('now'))",
+      [
+        name || null,
+        normalizedEmail || null,
+        role || "Employee" // Ensure correct casing
+      ]
     );
 
-    // 🔥 CRITICAL FIX:
-    // If the employee is not found, return an empty array instead of [null]
-    if (!me) {
-      console.warn(
-        "WARNING: Session user ID does not match any employee row. ID:",
-        user.id
-      );
-      return res.json([]);
-    }
+    const id = result.lastID;
 
-    return res.json([me]);
+    const created = await db.get(
+      "SELECT id, name, email, role FROM employees WHERE id = ?",
+      [id]
+    );
+
+    return res.status(201).json(created);
+
   } catch (err) {
-    console.error("Error fetching employees:", err);
-    return res.status(500).json({ error: "Failed to fetch employees" });
+    console.error("POST /employees error:", err);
+    return res.status(500).json({ error: "server error" });
   }
 });
 

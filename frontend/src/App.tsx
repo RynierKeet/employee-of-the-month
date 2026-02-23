@@ -1,30 +1,55 @@
 // src/App.tsx
+console.log("Running App.tsx");
+
 import React, { Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import Layout from "./components/Layout";
 import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
+import { useAuth } from "./auth";
+
 const ChangePassword = React.lazy(() => import("./pages/ChangePassword"));
 import SubmitReflection from "./pages/SubmitReflection";
 
 export default function App() {
+  const { me, loading } = useAuth();
+
+  // While auth is loading, avoid rendering routes prematurely
+  if (loading) {
+    return <div>Loading…</div>;
+  }
+
   return (
     <Routes>
-      {/* Opening page */}
-      <Route path="/" element={<Navigate to="/login" replace />} />
-      <Route path="/login" element={<Login />} />
-
-      {/* Change password (public) */}
+      {/* Redirect root to login or app depending on auth */}
       <Route
-        path="/change-password"
+        path="/"
         element={
-          <Suspense fallback={<div>Loading…</div>}>
-            <ChangePassword />
-          </Suspense>
+          me ? <Navigate to="/app" replace /> : <Navigate to="/login" replace />
         }
       />
 
-      {/* Protected subtree under /app */}
+      {/* LOGIN ROUTE — redirect authenticated users away */}
+      <Route
+        path="/login"
+        element={me ? <Navigate to="/app" replace /> : <Login />}
+      />
+
+      {/* CHANGE PASSWORD — public but should redirect authenticated users who already changed */}
+      <Route
+        path="/change-password"
+        element={
+          me && !me.must_change_password ? (
+            <Navigate to="/app" replace />
+          ) : (
+            <Suspense fallback={<div>Loading…</div>}>
+              <ChangePassword />
+            </Suspense>
+          )
+        }
+      />
+
+      {/* PROTECTED ROUTES */}
       <Route
         path="/app/*"
         element={
@@ -35,11 +60,11 @@ export default function App() {
       >
         <Route index element={<Navigate to="submit-reflection" replace />} />
         <Route path="submit-reflection" element={<SubmitReflection />} />
-        {/* add other protected routes here */}
+        {/* Add more protected routes here */}
       </Route>
 
-      {/* Fallback to login for anything else */}
-      <Route path="*" element={<Navigate to="/login" replace />} />
+      {/* FALLBACK */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

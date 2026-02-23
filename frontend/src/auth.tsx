@@ -1,18 +1,22 @@
 // src/auth.tsx
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
 /**
  * AuthUser
- * - id is optional because the backend may return null when unauthenticated
- * - must_change_password is optional and may be present when the user must change password
+ * Matches your backend's /auth/me response shape.
  */
 export type AuthUser = {
-  id?: number;
-  email?: string;
+  id: number;
+  email: string;
   name?: string;
+  role: string;
   must_change_password?: boolean;
-  role?: string;
-  roles?: string[];
 } | null;
 
 type AuthContextShape = {
@@ -35,17 +39,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<AuthUser>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const fetchMe = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
+  /**
+   * Fetch the current authenticated user.
+   * If 401 → user is logged out.
+   */
+  const fetchMe = useCallback(async () => {
     try {
-      const res = await fetch("/auth/me", { credentials: "include", signal });
-      if (res.status === 401) {
+      const res = await fetch("/auth/me", { credentials: "include" });
+
+      if (!res.ok) {
         setMe(null);
-        console.debug("[auth] fetchMe -> 401, set me = null");
+        console.debug("[auth] fetchMe -> 401 or error, set me = null");
         return;
       }
 
-      // Some backends may return empty body for 204; guard against that
       const text = await res.text();
       if (!text) {
         setMe(null);
@@ -54,39 +61,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const data = JSON.parse(text);
-      // Support both { user: {...} } and direct user object responses
-      const user = (data && (data.user ?? data)) ?? null;
+      const user = data.user ?? data ?? null;
+
       setMe(user);
       console.debug("[auth] fetchMe -> me:", user);
-    } catch (err: any) {
-      // If aborted, just return silently
-      if (err?.name === "AbortError") return;
-      // eslint-disable-next-line no-console
+    } catch (err) {
       console.error("[auth] fetchMe error", err);
       setMe(null);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
-  // refresh is a stable function callers can use
+  /**
+   * Public refresh() API
+   */
   const refresh = useCallback(async () => {
-    const controller = new AbortController();
-    try {
-      await fetchMe(controller.signal);
-    } finally {
-      controller.abort();
-    }
+    await fetchMe();
   }, [fetchMe]);
 
+  /**
+   * Load session on mount
+   */
   useEffect(() => {
-    const controller = new AbortController();
-    void fetchMe(controller.signal);
-    return () => {
-      controller.abort();
-    };
+    (async () => {
+      await fetchMe();
+      setLoading(false);
+    })();
   }, [fetchMe]);
 
+  /**
+   * Login
+   */
   async function login(email: string, password: string) {
     const res = await fetch("/auth/login", {
       method: "POST",
@@ -96,28 +100,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (!res.ok) {
-      // Try to parse JSON error body, fallback to status text
       const errBody = await res.text().catch(() => "");
       try {
         const parsed = errBody ? JSON.parse(errBody) : null;
-        throw new Error(parsed?.error || parsed?.message || res.statusText || "Login failed");
+        throw new Error(
+          parsed?.error || parsed?.message || res.statusText || "Login failed"
+        );
       } catch {
         throw new Error(errBody || res.statusText || "Login failed");
       }
     }
 
-    // Refresh local user state after successful login
+    // Refresh user state after login
     await refresh();
   }
 
+  /**
+   * Logout
+   * - Backend destroys session
+   * - Frontend clears local state
+   */
   async function logout() {
     try {
-      await fetch("/auth/logout", { method: "POST", credentials: "include" });
+      await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.warn("[auth] logout error", err);
     } finally {
-      setMe(null);
+      setMe(null); // <-- critical fix
       console.debug("[auth] logout -> set me = null");
     }
   }
