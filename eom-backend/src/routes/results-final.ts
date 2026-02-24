@@ -4,33 +4,54 @@ import { getCurrentUser, getIdentity } from "../utils/auth";
 
 const router = Router();
 
-// Normalize YYYY-MM or YYYY-MM-DD → YYYY-MM
+const QUESTION_KEYS = [
+  "achievements",
+  "impact",
+  "values",
+  "growth",
+  "beyond",
+  "nomination",
+] as const;
+
+type QuestionKey = (typeof QUESTION_KEYS)[number];
+
+const QUESTION_LABELS: Record<QuestionKey, string> = {
+  achievements: "Key Achievements",
+  impact: "Impact on Team / Organisation",
+  values: "Behaviour and Values",
+  growth: "Growth and Learning",
+  beyond: "Going Above and Beyond",
+  nomination: "Nomination Justification",
+};
+
 function normalizeMonthKey(raw: string): string {
   if (!raw) return "";
   return raw.trim().slice(0, 7);
 }
 
-// -----------------------------------------------------
-// GET /results-final?month=YYYY-MM
-// Final results for a month
-// - Adjudicators always see full results
-// - Employees see results only after publish
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   GET /results-final?month=YYYY-MM
+   Final locked results + winners
+   - Adjudicators always see results
+   - Employees see results only after publish
+----------------------------------------------------- */
 router.get("/", async (req, res) => {
   const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: "Not logged in" });
 
   const identity = getIdentity(user);
 
-  const month = typeof req.query.month === "string" ? req.query.month : "";
-  const month_key = normalizeMonthKey(month);
+  const rawMonth = typeof req.query.month === "string" ? req.query.month : "";
+  const month_key = normalizeMonthKey(rawMonth);
 
   if (!month_key) {
     return res.status(400).json({ error: "Missing or invalid month" });
   }
 
   try {
-    // Check publish status for this month
+    /* -----------------------------------------------------
+       1) Check publish status
+    ----------------------------------------------------- */
     const publishRow = await db.get(
       "SELECT published FROM results_publish WHERE month_key = ?",
       [month_key]
@@ -43,41 +64,76 @@ router.get("/", async (req, res) => {
       return res.json({ published: false });
     }
 
-    // Fetch final aggregated results
-    const rows = await db.all(
-      `
-      SELECT
-        v.vote_for_id AS employee_id,
-        e.name AS employee_name,
+    /* -----------------------------------------------------
+       2) Build final results per question
+    ----------------------------------------------------- */
+    const results = [];
+    const winners = [];
 
-        CAST(SUM(CASE WHEN v.is_adjudication = 0 THEN 1 ELSE 0 END) AS UNSIGNED)
-          AS normal_votes,
+    for (const qKey of QUESTION_KEYS) {
+      // Load nominees
+      const nominees = await db.all(
+        `
+        SELECT e.id AS nominee_id,
+               e.name AS nominee_name
+        FROM employees e
+        JOIN reflections r ON r.employee_id = e.id
+        WHERE r.month_key = ?
+          AND r.is_final = 1
+          AND e.is_adjudicator = 0
+        ORDER BY e.name ASC
+        `,
+        [month_key]
+      );
 
-        CAST(SUM(CASE WHEN v.is_adjudication = 1 THEN 1 ELSE 0 END) AS UNSIGNED)
-          AS adjudication_votes,
+      // Load FINAL vote counts only
+      const voteCounts = await db.all(
+        `
+        SELECT nominee_id, COUNT(*) AS votes
+        FROM votes
+        WHERE month_key = ?
+          AND question_key = ?
+          AND is_final = 1
+        GROUP BY nominee_id
+        `,
+        [month_key, qKey]
+      );
 
-        CAST(COUNT(*) AS UNSIGNED) AS total_votes
+      const voteMap = new Map<number, number>();
+      voteCounts.forEach((v) => voteMap.set(v.nominee_id, v.votes));
 
-      FROM votes v
-      JOIN employees e ON e.id = v.vote_for_id
+      const enriched = nominees.map((n) => ({
+        nominee_id: n.nominee_id,
+        nominee_name: n.nominee_name,
+        vote_count: voteMap.get(n.nominee_id) || 0,
+      }));
 
-      WHERE v.month_key = ?
-        AND e.is_adjudicator = 0   -- FIXED: exclude adjudicators correctly
+      // Determine winner(s)
+      const maxVotes = Math.max(...enriched.map((n) => n.vote_count));
+      const qWinners = enriched.filter((n) => n.vote_count === maxVotes);
 
-      GROUP BY v.vote_for_id, e.name
+      results.push({
+        question_key: qKey,
+        question_label: QUESTION_LABELS[qKey],
+        nominees: enriched,
+        winners: qWinners,
+      });
 
-      ORDER BY
-        total_votes DESC,
-        normal_votes DESC,
-        employee_name ASC
-      `,
-      [month_key]
-    );
+      winners.push({
+        question_key: qKey,
+        question_label: QUESTION_LABELS[qKey],
+        winners: qWinners,
+      });
+    }
 
+    /* -----------------------------------------------------
+       3) Return final results
+    ----------------------------------------------------- */
     return res.json({
       published: isPublished,
       month_key,
-      results: rows,
+      results,
+      winners,
       visibleScope: identity === "Adjudicator" ? "adjudicator" : "public",
     });
   } catch (err) {

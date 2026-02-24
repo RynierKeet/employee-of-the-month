@@ -10,6 +10,7 @@ import { useAuth } from "./auth";
 
 const ChangePassword = React.lazy(() => import("./pages/ChangePassword"));
 import SubmitReflection from "./pages/SubmitReflection";
+import Vote from "./pages/Vote"; // ✅ new voting page route
 
 export default function App() {
   const { me, loading } = useAuth();
@@ -35,7 +36,7 @@ export default function App() {
         element={me ? <Navigate to="/app" replace /> : <Login />}
       />
 
-      {/* CHANGE PASSWORD — public but should redirect authenticated users who already changed */}
+      {/* CHANGE PASSWORD */}
       <Route
         path="/change-password"
         element={
@@ -58,9 +59,14 @@ export default function App() {
           </RequireAuth>
         }
       >
+        {/* Default route inside /app */}
         <Route index element={<Navigate to="submit-reflection" replace />} />
+
+        {/* STEP 1 — Submit Reflection */}
         <Route path="submit-reflection" element={<SubmitReflection />} />
-        {/* Add more protected routes here */}
+
+        {/* STEP 2 — Voting */}
+        <Route path="vote" element={<Vote />} />
       </Route>
 
       {/* FALLBACK */}

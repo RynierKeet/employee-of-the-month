@@ -4,7 +4,6 @@ import db from "../db";
 
 const router = Router();
 
-// Normalize YYYY-MM or YYYY-MM-DD → YYYY-MM
 function normalizeMonthKey(raw: string): string {
   if (!raw) return "";
   return raw.trim().slice(0, 7);
@@ -12,15 +11,7 @@ function normalizeMonthKey(raw: string): string {
 
 /* -----------------------------------------------------
    GET /adjudication/panel?month=YYYY-MM
-   Returns unified adjudication payload:
-   - All candidates
-   - Employee vote totals
-   - Reflections
-   - Employee motivations
-   - Adjudicator votes
-   - Suggested winner
-   - Tie highlighting
-   - Finalisation status
+   Unified adjudication payload
 ----------------------------------------------------- */
 router.get("/panel", async (req, res) => {
   try {
@@ -37,257 +28,642 @@ router.get("/panel", async (req, res) => {
       return res.status(400).json({ error: "Missing month parameter" });
     }
 
-    // ---------------------------------------------------------
-    // 1. Fetch all candidates with employee vote totals
-    // ---------------------------------------------------------
+    /* -----------------------------------------------------
+       1. Candidates (non-adjudicators with final reflections)
+    ----------------------------------------------------- */
     const candidates = await db.all(
-      `SELECT e.id AS employee_id, e.name, e.photo_url,
-              COUNT(v.vote_for_id) AS votes
-       FROM employees e
-       LEFT JOIN votes v
-         ON v.vote_for_id = e.id
-        AND v.month_key = ?
-        AND v.is_adjudication = 0
-       GROUP BY e.id
-       ORDER BY votes DESC`,
+      `
+      SELECT e.id AS employee_id,
+             e.name,
+             e.photo_url,
+             r.achievements_text,
+             r.impact_text,
+             r.values_text,
+             r.growth_text,
+             r.beyond_text,
+             r.nomination_text
+      FROM employees e
+      JOIN reflections r ON r.employee_id = e.id
+      WHERE r.month_key = ?
+        AND r.is_final = 1
+        AND e.is_adjudicator = 0
+      ORDER BY e.name ASC
+      `,
       [month_key]
     );
 
-    // ---------------------------------------------------------
-    // 2. Fetch reflections
-    // ---------------------------------------------------------
-    const reflections = await db.all(
-      `SELECT employee_id, reflection_text
-       FROM reflections
-       WHERE month_key = ?`,
+    /* -----------------------------------------------------
+       2. Employee vote totals (sum across all questions)
+    ----------------------------------------------------- */
+    const voteTotals = await db.all(
+      `
+      SELECT nominee_id AS employee_id,
+             COUNT(*) AS votes
+      FROM votes
+      WHERE month_key = ?
+        AND is_final = 1
+        AND question_key != 'adjudication'
+      GROUP BY nominee_id
+      `,
       [month_key]
     );
 
-    // ---------------------------------------------------------
-    // 3. Fetch employee motivations (normal votes)
-    // ---------------------------------------------------------
-    const motivations = await db.all(
-      `SELECT v.vote_for_id AS employee_id,
-              v.voter_id,
-              e.name AS voter_name,
-              v.motivation,
-              v.created_at
-       FROM votes v
-       JOIN employees e ON e.id = v.voter_id
-       WHERE v.month_key = ?
-         AND v.is_adjudication = 0
-         AND v.motivation IS NOT NULL
-       ORDER BY v.created_at ASC`,
-      [month_key]
-    );
+    const voteMap = new Map<number, number>();
+    voteTotals.forEach((v: any) => voteMap.set(v.employee_id, v.votes));
 
-    // ---------------------------------------------------------
-    // 4. Fetch adjudicator votes
-    // ---------------------------------------------------------
-    const adjudicatorVotes = await db.all(
-      `SELECT v.vote_for_id AS employee_id,
-              v.voter_id AS adjudicator_id,
-              e.name AS adjudicator_name,
-              v.created_at
-       FROM votes v
-       JOIN employees e ON e.id = v.voter_id
-       WHERE v.month_key = ?
-         AND v.is_adjudication = 1
-       ORDER BY v.created_at ASC`,
-      [month_key]
-    );
-
-    // ---------------------------------------------------------
-    // 5. Attach reflections + motivations + adjudicator votes
-    // ---------------------------------------------------------
-    const candidatesFull = candidates.map(c => ({
-      ...c,
-      reflection_text:
-        reflections.find(r => r.employee_id === c.employee_id)?.reflection_text || "",
-      motivations: motivations.filter(m => m.employee_id === c.employee_id),
-      adjudicatorVotes: adjudicatorVotes.filter(a => a.employee_id === c.employee_id)
+    const candidatesFull = candidates.map((c: any) => ({
+      employee_id: c.employee_id,
+      name: c.name,
+      photo_url: c.photo_url,
+      votes: voteMap.get(c.employee_id) || 0,
+      reflections: {
+        achievements_text: c.achievements_text,
+        impact_text: c.impact_text,
+        values_text: c.values_text,
+        growth_text: c.growth_text,
+        beyond_text: c.beyond_text,
+        nomination_text: c.nomination_text,
+      },
     }));
 
-    // ---------------------------------------------------------
-    // 6. Suggested winner (highest employee votes)
-    // ---------------------------------------------------------
-    const maxVotes = Math.max(...candidates.map(c => c.votes));
-    const suggestedWinner = candidates.find(c => c.votes === maxVotes);
+    /* -----------------------------------------------------
+       3. Suggested winner (before adjudication rounds)
+    ----------------------------------------------------- */
+    let suggestedWinner = null;
+    if (candidatesFull.length > 0) {
+      const maxVotes = Math.max(...candidatesFull.map((c) => c.votes));
+      suggestedWinner =
+        candidatesFull.find((c) => c.votes === maxVotes) || null;
+    }
 
-    // ---------------------------------------------------------
-    // 7. Tied candidates (highlighting only)
-    // ---------------------------------------------------------
-    const tiedCandidates = candidates
-      .filter(c => c.votes === maxVotes)
-      .map(c => c.employee_id);
+    /* -----------------------------------------------------
+       4. Tied candidates (before adjudication rounds)
+    ----------------------------------------------------- */
+    let tiedCandidates: number[] = [];
+    if (candidatesFull.length > 0) {
+      const maxVotes = Math.max(...candidatesFull.map((c) => c.votes));
+      tiedCandidates = candidatesFull
+        .filter((c) => c.votes === maxVotes)
+        .map((c) => c.employee_id);
+    }
 
-    // ---------------------------------------------------------
-    // 8. Check if final winner already exists
-    // ---------------------------------------------------------
-    const finalWinner = await db.get(
-      `SELECT employee_id
-       FROM results_final
-       WHERE month_key = ?
-       LIMIT 1`,
+    /* -----------------------------------------------------
+       5. Current adjudication round
+    ----------------------------------------------------- */
+    const roundRow = await db.get(
+      `
+      SELECT MAX(round_number) AS round_number
+      FROM adjudication_rounds
+      WHERE month_key = ?
+      `,
       [month_key]
     );
 
-    // ---------------------------------------------------------
-    // 9. Determine if all adjudicators have voted
-    // ---------------------------------------------------------
-    const adjudicators = await db.all(
-      `SELECT id FROM employees WHERE is_adjudicator = 1`
+    const currentRound = roundRow?.round_number || null;
+
+    let roundCandidates: any[] = [];
+    let roundVotes: any[] = [];
+    let roundWinner: number | null = null;
+    let allAdjudicatorsVotedInRound = false;
+
+    if (currentRound) {
+      roundCandidates = await db.all(
+        `
+        SELECT ar.candidate_id AS employee_id,
+               e.name AS employee_name,
+               ar.votes
+        FROM adjudication_rounds ar
+        JOIN employees e ON e.id = ar.candidate_id
+        WHERE ar.month_key = ?
+          AND ar.round_number = ?
+        ORDER BY e.name ASC
+        `,
+        [month_key, currentRound]
+      );
+
+      roundVotes = await db.all(
+        `
+        SELECT arv.adjudicator_id,
+               ae.name AS adjudicator_name,
+               arv.candidate_id AS employee_id,
+               ce.name AS employee_name,
+               arv.created_at
+        FROM adjudication_round_votes arv
+        JOIN employees ae ON ae.id = arv.adjudicator_id
+        JOIN employees ce ON ce.id = arv.candidate_id
+        WHERE arv.month_key = ?
+          AND arv.round_number = ?
+        ORDER BY arv.created_at ASC
+        `,
+        [month_key, currentRound]
+      );
+
+      const adjudicators = await db.all(
+        `SELECT id FROM employees WHERE is_adjudicator = 1`
+      );
+
+      allAdjudicatorsVotedInRound =
+        roundVotes.length === adjudicators.length;
+
+      if (roundCandidates.length > 0) {
+        const maxVotes = Math.max(...roundCandidates.map((c: any) => c.votes));
+        const top = roundCandidates.filter((c: any) => c.votes === maxVotes);
+        if (allAdjudicatorsVotedInRound && top.length === 1) {
+          roundWinner = top[0].employee_id;
+        }
+      }
+    }
+
+    /* -----------------------------------------------------
+       6. Final winner (if already stored)
+    ----------------------------------------------------- */
+    const finalWinner = await db.get(
+      `
+      SELECT rf.employee_id, e.name AS employee_name
+      FROM results_final rf
+      JOIN employees e ON e.id = rf.employee_id
+      WHERE rf.month_key = ?
+      LIMIT 1
+      `,
+      [month_key]
     );
 
-    const allAdjudicatorsVoted =
-      adjudicatorVotes.length === adjudicators.length;
-
-    // ---------------------------------------------------------
-    // 10. Return unified adjudication payload
-    // ---------------------------------------------------------
     return res.json({
       month_key,
       candidates: candidatesFull,
       suggestedWinner,
       tiedCandidates,
-      adjudicatorVotes,
-      allAdjudicatorsVoted,
-      finalWinner
+      currentRound,
+      roundCandidates,
+      roundVotes,
+      roundWinner,
+      allAdjudicatorsVotedInRound,
+      finalWinner,
     });
-
   } catch (err) {
     console.error("Error in adjudication panel:", err);
-    return res.status(500).json({ error: "Failed to load adjudication panel data" });
+    return res
+      .status(500)
+      .json({ error: "Failed to load adjudication panel data" });
   }
 });
 
 /* -----------------------------------------------------
-   POST /adjudication/vote
-   Body: { vote_for_id, month_key }
-   One adjudication vote per adjudicator
+   POST /adjudication/start-round
 ----------------------------------------------------- */
-router.post("/vote", async (req, res) => {
+router.post("/start-round", async (req, res) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ error: "Not logged in" });
 
-    const identity = getIdentity(user);
-    if (identity !== "Adjudicator") {
+    if (getIdentity(user) !== "Adjudicator") {
+      return res.status(403).json({ error: "Only adjudicators may start rounds" });
+    }
+
+    const month_key = normalizeMonthKey(req.body?.month_key);
+    if (!month_key) return res.status(400).json({ error: "Missing month_key" });
+
+    const existingFinal = await db.get(
+      `SELECT 1 FROM results_final WHERE month_key = ?`,
+      [month_key]
+    );
+    if (existingFinal) {
+      return res.status(409).json({ error: "Winner already finalised" });
+    }
+
+    const voteTotals = await db.all(
+      `
+      SELECT nominee_id AS employee_id,
+             COUNT(*) AS votes
+      FROM votes
+      WHERE month_key = ?
+        AND is_final = 1
+        AND question_key != 'adjudication'
+      GROUP BY nominee_id
+      `,
+      [month_key]
+    );
+
+    if (!voteTotals.length) {
+      return res.status(400).json({ error: "No employee votes found" });
+    }
+
+    const maxVotes = Math.max(...voteTotals.map((v: any) => v.votes));
+    const tied = voteTotals.filter((v: any) => v.votes === maxVotes);
+
+    if (tied.length < 2) {
+      return res.status(400).json({ error: "No tie detected" });
+    }
+
+    // Safety: remove adjudicators from tied list
+    const filteredTied: any[] = [];
+    for (const t of tied) {
+      const emp = await db.get(
+        `SELECT is_adjudicator FROM employees WHERE id = ?`,
+        [t.employee_id]
+      );
+      if (emp?.is_adjudicator === 0) {
+        filteredTied.push(t);
+      }
+    }
+
+    if (filteredTied.length < 2) {
+      return res.status(400).json({ error: "No valid tie among employees" });
+    }
+
+    const row = await db.get(
+      `
+      SELECT MAX(round_number) AS round_number
+      FROM adjudication_rounds
+      WHERE month_key = ?
+      `,
+      [month_key]
+    );
+    const nextRound = (row?.round_number || 0) + 1;
+
+    for (const t of filteredTied) {
+      await db.run(
+        `
+        INSERT INTO adjudication_rounds (month_key, round_number, candidate_id, votes)
+        VALUES (?, ?, ?, 0)
+        `,
+        [month_key, nextRound, t.employee_id]
+      );
+    }
+
+    return res.json({
+      success: true,
+      month_key,
+      round_number: nextRound,
+      candidates: filteredTied,
+    });
+  } catch (err) {
+    console.error("Error starting adjudication round:", err);
+    return res.status(500).json({ error: "Failed to start adjudication round" });
+  }
+});
+
+/* -----------------------------------------------------
+   POST /adjudication/round-vote
+----------------------------------------------------- */
+router.post("/round-vote", async (req, res) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+
+    if (getIdentity(user) !== "Adjudicator") {
       return res.status(403).json({ error: "Only adjudicators may vote" });
     }
 
-    const voterId = user.id;
-    const { vote_for_id, month_key: rawMonth } = req.body ?? {};
+    const adjudicatorId = user.id;
+    const month_key = normalizeMonthKey(req.body?.month_key);
+    const candidateId = Number(req.body?.candidate_id);
 
-    const voteForId = Number(vote_for_id);
-    const month_key = normalizeMonthKey(rawMonth);
-
-    if (!voteForId || !month_key) {
-      return res.status(400).json({ error: "Missing vote_for_id or month_key" });
+    if (!month_key || !candidateId) {
+      return res.status(400).json({ error: "Missing month_key or candidate_id" });
     }
 
-    // Prevent double adjudication vote
+    const row = await db.get(
+      `
+      SELECT MAX(round_number) AS round_number
+      FROM adjudication_rounds
+      WHERE month_key = ?
+      `,
+      [month_key]
+    );
+    const currentRound = row?.round_number;
+    if (!currentRound) {
+      return res.status(400).json({ error: "No active adjudication round" });
+    }
+
+    const candidateRow = await db.get(
+      `
+      SELECT 1
+      FROM adjudication_rounds
+      WHERE month_key = ?
+        AND round_number = ?
+        AND candidate_id = ?
+      `,
+      [month_key, currentRound, candidateId]
+    );
+    if (!candidateRow) {
+      return res.status(400).json({ error: "Candidate not in this round" });
+    }
+
     const existing = await db.get(
-      `SELECT id FROM votes
-       WHERE voter_id = ? AND month_key = ? AND is_adjudication = 1`,
-      [voterId, month_key]
+      `
+      SELECT 1
+      FROM adjudication_round_votes
+      WHERE month_key = ?
+        AND round_number = ?
+        AND adjudicator_id = ?
+      `,
+      [month_key, currentRound, adjudicatorId]
     );
-
     if (existing) {
-      return res.status(409).json({
-        error: "You have already cast your adjudication vote"
-      });
+      return res.status(409).json({ error: "You already voted in this round" });
     }
 
-    // Insert adjudication vote
-    const result = await db.run(
-      `INSERT INTO votes (voter_id, vote_for_id, month_key, is_adjudication)
-       VALUES (?, ?, ?, 1)`,
-      [voterId, voteForId, month_key]
+    await db.run(
+      `
+      INSERT INTO adjudication_round_votes (month_key, round_number, adjudicator_id, candidate_id)
+      VALUES (?, ?, ?, ?)
+      `,
+      [month_key, currentRound, adjudicatorId, candidateId]
     );
 
-    return res.status(201).json({
-      success: true,
-      id: result.insertId,
-      voter_id: voterId,
-      vote_for_id: voteForId,
-      month_key,
-      is_adjudication: 1
-    });
+    await db.run(
+      `
+      UPDATE adjudication_rounds
+      SET votes = votes + 1
+      WHERE month_key = ?
+        AND round_number = ?
+        AND candidate_id = ?
+      `,
+      [month_key, currentRound, candidateId]
+    );
 
+    return res.json({ success: true });
   } catch (err) {
-    console.error("Error casting adjudication vote:", err);
-    return res.status(500).json({ error: "Failed to cast adjudication vote" });
+    console.error("Error casting round vote:", err);
+    return res.status(500).json({ error: "Failed to cast round vote" });
   }
 });
 
 /* -----------------------------------------------------
-   POST /adjudication/confirm
-   Finalises the winner:
-   - Combines employee votes + adjudicator votes
-   - Stores final winner in results_final
+   GET /adjudication/round-status
 ----------------------------------------------------- */
-router.post("/confirm", async (req, res) => {
+router.get("/round-status", async (req, res) => {
   try {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ error: "Not logged in" });
 
-    const identity = getIdentity(user);
-    if (identity !== "Adjudicator") {
-      return res.status(403).json({ error: "Only adjudicators may confirm" });
+    if (getIdentity(user) !== "Adjudicator") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
-    const { month_key: rawMonth } = req.body ?? {};
-    const month_key = normalizeMonthKey(rawMonth);
+    const month_key = normalizeMonthKey(String(req.query.month || ""));
+    if (!month_key) {
+      return res.status(400).json({ error: "Missing month parameter" });
+    }
 
+    const row = await db.get(
+      `
+      SELECT MAX(round_number) AS round_number
+      FROM adjudication_rounds
+      WHERE month_key = ?
+      `,
+      [month_key]
+    );
+    const currentRound = row?.round_number || null;
+
+    if (!currentRound) {
+      return res.json({
+        month_key,
+        currentRound: null,
+        candidates: [],
+        votes: [],
+        allAdjudicatorsVoted: false,
+        winner: null,
+      });
+    }
+
+    const candidates = await db.all(
+      `
+      SELECT ar.candidate_id AS employee_id,
+             e.name AS employee_name,
+             ar.votes
+      FROM adjudication_rounds ar
+      JOIN employees e ON e.id = ar.candidate_id
+      WHERE ar.month_key = ?
+        AND ar.round_number = ?
+      ORDER BY e.name ASC
+      `,
+      [month_key, currentRound]
+    );
+
+    const votes = await db.all(
+      `
+      SELECT arv.adjudicator_id,
+             ae.name AS adjudicator_name,
+             arv.candidate_id AS employee_id,
+             ce.name AS employee_name,
+             arv.created_at
+      FROM adjudication_round_votes arv
+      JOIN employees ae ON ae.id = arv.adjudicator_id
+      JOIN employees ce ON ce.id = arv.candidate_id
+      WHERE arv.month_key = ?
+        AND arv.round_number = ?
+      ORDER BY arv.created_at ASC
+      `,
+      [month_key, currentRound]
+    );
+
+    const adjudicators = await db.all(
+      `SELECT id FROM employees WHERE is_adjudicator = 1`
+    );
+
+    const allAdjudicatorsVoted = votes.length === adjudicators.length;
+
+    let winner: number | null = null;
+    if (candidates.length > 0) {
+      const maxVotes = Math.max(...candidates.map((c: any) => c.votes));
+      const top = candidates.filter((c: any) => c.votes === maxVotes);
+      if (allAdjudicatorsVoted && top.length === 1) {
+        winner = top[0].employee_id;
+      }
+    }
+
+    return res.json({
+      month_key,
+      currentRound,
+      candidates,
+      votes,
+      allAdjudicatorsVoted,
+      winner,
+    });
+  } catch (err) {
+    console.error("Error fetching round status:", err);
+    return res.status(500).json({ error: "Failed to fetch round status" });
+  }
+});
+
+/* -----------------------------------------------------
+   GET /adjudication/round-history
+----------------------------------------------------- */
+router.get("/round-history", async (req, res) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+
+    if (getIdentity(user) !== "Adjudicator") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const month_key = normalizeMonthKey(String(req.query.month || ""));
+    if (!month_key) {
+      return res.status(400).json({ error: "Missing month parameter" });
+    }
+
+    const roundRows = await db.all(
+      `
+      SELECT ar.round_number,
+             ar.candidate_id AS employee_id,
+             e.name AS employee_name,
+             ar.votes
+      FROM adjudication_rounds ar
+      JOIN employees e ON e.id = ar.candidate_id
+      WHERE ar.month_key = ?
+      ORDER BY ar.round_number ASC, ar.votes DESC, e.name ASC
+      `,
+      [month_key]
+    );
+
+    const voteRows = await db.all(
+      `
+      SELECT arv.round_number,
+             arv.adjudicator_id,
+             ae.name AS adjudicator_name,
+             arv.candidate_id AS employee_id,
+             ce.name AS employee_name,
+             arv.created_at
+      FROM adjudication_round_votes arv
+      JOIN employees ae ON ae.id = arv.adjudicator_id
+      JOIN employees ce ON ce.id = arv.candidate_id
+      WHERE arv.month_key = ?
+      ORDER BY arv.round_number ASC, arv.created_at ASC
+      `,
+      [month_key]
+    );
+
+    const roundsMap = new Map<number, any>();
+
+    for (const r of roundRows) {
+      if (!roundsMap.has(r.round_number)) {
+        roundsMap.set(r.round_number, {
+          round_number: r.round_number,
+          candidates: [],
+          votes: [],
+        });
+      }
+      roundsMap.get(r.round_number).candidates.push({
+        employee_id: r.employee_id,
+        employee_name: r.employee_name,
+        votes: r.votes,
+      });
+    }
+
+    for (const v of voteRows) {
+      if (!roundsMap.has(v.round_number)) {
+        roundsMap.set(v.round_number, {
+          round_number: v.round_number,
+          candidates: [],
+          votes: [],
+        });
+      }
+      roundsMap.get(v.round_number).votes.push({
+        adjudicator_id: v.adjudicator_id,
+        adjudicator_name: v.adjudicator_name,
+        employee_id: v.employee_id,
+        employee_name: v.employee_name,
+        created_at: v.created_at,
+      });
+    }
+
+    const rounds = Array.from(roundsMap.values()).sort(
+      (a, b) => a.round_number - b.round_number
+    );
+
+    return res.json({ month_key, rounds });
+  } catch (err) {
+    console.error("Error fetching round history:", err);
+    return res.status(500).json({ error: "Failed to fetch round history" });
+  }
+});
+
+/* -----------------------------------------------------
+   POST /adjudication/finalise-winner
+----------------------------------------------------- */
+router.post("/finalise-winner", async (req, res) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+
+    if (getIdentity(user) !== "Adjudicator") {
+      return res.status(403).json({ error: "Only adjudicators may finalise" });
+    }
+
+    const month_key = normalizeMonthKey(req.body?.month_key);
     if (!month_key) {
       return res.status(400).json({ error: "Missing month_key" });
     }
 
-    // Prevent double finalisation
     const existing = await db.get(
       `SELECT 1 FROM results_final WHERE month_key = ?`,
       [month_key]
     );
-
     if (existing) {
       return res.status(409).json({ error: "Winner already finalised" });
     }
 
-    // Combine employee votes + adjudicator votes
-    const final = await db.get(
-      `SELECT employee_id, SUM(votes) AS total
-       FROM (
-         SELECT vote_for_id AS employee_id, COUNT(*) AS votes
-         FROM votes
-         WHERE month_key = ? AND is_adjudication = 0
-         GROUP BY vote_for_id
-
-         UNION ALL
-
-         SELECT vote_for_id AS employee_id, COUNT(*) AS votes
-         FROM votes
-         WHERE month_key = ? AND is_adjudication = 1
-         GROUP BY vote_for_id
-       )
-       GROUP BY employee_id
-       ORDER BY total DESC
-       LIMIT 1`,
-      [month_key, month_key]
+    const row = await db.get(
+      `
+      SELECT MAX(round_number) AS round_number
+      FROM adjudication_rounds
+      WHERE month_key = ?
+      `,
+      [month_key]
     );
+    const currentRound = row?.round_number;
+    if (!currentRound) {
+      return res
+        .status(400)
+        .json({ error: "No adjudication round found for this month" });
+    }
+
+    const candidates = await db.all(
+      `
+      SELECT candidate_id AS employee_id, votes
+      FROM adjudication_rounds
+      WHERE month_key = ?
+        AND round_number = ?
+      `,
+      [month_key, currentRound]
+    );
+
+    if (!candidates || candidates.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "No candidates in current adjudication round" });
+    }
+
+    const maxVotes = Math.max(...candidates.map((c: any) => c.votes));
+    const top = candidates.filter((c: any) => c.votes === maxVotes);
+
+    if (top.length !== 1) {
+      return res
+        .status(400)
+        .json({ error: "No single winner in current round (tie persists)" });
+    }
+
+    const winnerId = top[0].employee_id;
 
     await db.run(
-      `INSERT INTO results_final (employee_id, month_key)
-       VALUES (?, ?)`,
-      [final.employee_id, month_key]
+      `
+      INSERT INTO results_final (employee_id, month_key)
+      VALUES (?, ?)
+      `,
+      [winnerId, month_key]
     );
 
-    return res.json({ success: true, winner: final.employee_id });
-
+    return res.json({ success: true, winner: winnerId });
   } catch (err) {
-    console.error("Error finalising adjudication:", err);
+    console.error("Error finalising winner:", err);
     return res.status(500).json({ error: "Failed to finalise winner" });
   }
 });
 
+/* -----------------------------------------------------
+   EXPORT ROUTER
+----------------------------------------------------- */
 export default router;

@@ -17,7 +17,7 @@ export default defineConfig({
     // Expose on local network (useful for testing on devices)
     host: true,
 
-    // Proxy ALL backend routes to Express on port 3000
+    // Proxy backend routes to Express on port 3000
     proxy: {
       "/auth": {
         target: "http://localhost:3000",
@@ -56,6 +56,13 @@ export default defineConfig({
         secure: false,
       },
       "/adjudication": {
+        target: "http://localhost:3000",
+        changeOrigin: true,
+        secure: false,
+      },
+
+      // Proxy voting endpoints (important: your frontend calls /voting/...)
+      "/voting": {
         target: "http://localhost:3000",
         changeOrigin: true,
         secure: false,

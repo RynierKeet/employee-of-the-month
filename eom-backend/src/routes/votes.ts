@@ -1,62 +1,117 @@
 import { Router } from "express";
 import db from "../db";
-import { getCurrentUser, getIdentity } from "../utils/auth";
+import { getCurrentUser } from "../utils/auth";
 
 const router = Router();
 
-// Normalize YYYY-MM or YYYY-MM-DD → YYYY-MM
+/**
+ * Normalize YYYY-MM or YYYY-MM-DD → YYYY-MM
+ */
 function normalizeMonthKey(raw: string): string {
   if (!raw) return "";
   return raw.trim().slice(0, 7);
 }
 
-// -----------------------------------------------------
-// GET /votes?month=YYYY-MM
-// Aggregated vote results for a month (excludes adjudicators)
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   GET /votes?month=YYYY-MM
+   Returns aggregated FINAL votes for the month.
+   - Requires login
+   - Excludes adjudicators as nominees
+   - Returns sorted list: highest votes first
+----------------------------------------------------- */
 router.get("/", async (req, res) => {
-  const month = typeof req.query.month === "string" ? req.query.month : "";
-  const month_key = normalizeMonthKey(month);
-
-  if (!month_key) {
-    return res.status(400).json({ error: "Missing or invalid month" });
-  }
-
   try {
+    const user = await getCurrentUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Not logged in" });
+    }
+
+    const rawMonth = typeof req.query.month === "string" ? req.query.month : "";
+    const month_key = normalizeMonthKey(rawMonth);
+
+    if (!month_key) {
+      return res.status(400).json({ error: "Missing or invalid month" });
+    }
+
+    // Aggregate FINAL votes only
     const rows = await db.all(
       `
       SELECT
-        v.vote_for_id AS employee_id,
+        v.nominee_id AS employee_id,
         e.name AS employee_name,
-
-        CAST(SUM(CASE WHEN v.is_adjudication = 0 THEN 1 ELSE 0 END) AS UNSIGNED)
-          AS normal_votes,
-
-        CAST(SUM(CASE WHEN v.is_adjudication = 1 THEN 1 ELSE 0 END) AS UNSIGNED)
-          AS adjudication_votes,
-
-        CAST(COUNT(*) AS UNSIGNED) AS total_votes
-
+        COUNT(*) AS total_votes
       FROM votes v
-      JOIN employees e ON e.id = v.vote_for_id
-
+      JOIN employees e ON e.id = v.nominee_id
       WHERE v.month_key = ?
-        AND e.is_adjudicator = 0   -- FIXED: exclude adjudicators correctly
-
-      GROUP BY v.vote_for_id, e.name
-
-      ORDER BY
-        total_votes DESC,
-        normal_votes DESC,
-        employee_name ASC
+        AND v.is_final = 1
+        AND e.is_adjudicator = 0   -- adjudicators cannot be nominees
+      GROUP BY v.nominee_id, e.name
+      ORDER BY total_votes DESC, employee_name ASC
       `,
       [month_key]
     );
 
-    return res.json(rows);
+    return res.json(rows || []);
   } catch (err) {
-    console.error("Error fetching results:", err);
-    return res.status(500).json({ error: "Failed to fetch results" });
+    console.error("Error fetching vote results:", err);
+    return res.status(500).json({ error: "Failed to fetch vote results" });
+  }
+});
+
+/* -----------------------------------------------------
+   POST /votes/save
+   Saves a single vote (draft or final).
+   BACKEND SAFETY ADDED:
+   - Prevents voting for adjudicators
+----------------------------------------------------- */
+router.post("/save", async (req, res) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Not logged in" });
+    }
+
+    const { month_key: rawMonth, question_key, nominee_id, is_final } = req.body;
+
+    const month_key = normalizeMonthKey(rawMonth);
+    if (!month_key || !question_key || !nominee_id) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    // 🔒 SAFETY: Prevent voting for adjudicators
+    const nominee = await db.get(
+      `SELECT is_adjudicator FROM employees WHERE id = ?`,
+      [nominee_id]
+    );
+
+    if (nominee?.is_adjudicator === 1) {
+      return res.status(400).json({ error: "Cannot vote for adjudicators" });
+    }
+
+    // Delete existing vote for this question (draft or final)
+    await db.run(
+      `
+      DELETE FROM votes
+      WHERE employee_id = ?
+        AND month_key = ?
+        AND question_key = ?
+      `,
+      [user.id, month_key, question_key]
+    );
+
+    // Insert new vote
+    await db.run(
+      `
+      INSERT INTO votes (employee_id, month_key, question_key, nominee_id, is_final)
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      [user.id, month_key, question_key, nominee_id, is_final ? 1 : 0]
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Error saving vote:", err);
+    return res.status(500).json({ error: "Failed to save vote" });
   }
 });
 

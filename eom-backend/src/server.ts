@@ -7,12 +7,15 @@ import path from "path";
 
 import employeesRouter from "./routes/employees";
 import reflectionsRouter from "./routes/reflections";
-import votesRouter from "./routes/votes";
+import votesRouter from "./routes/votes";          // results aggregator
 import resultsRouter from "./routes/results";
 import resultsFinalRouter from "./routes/results-final";
 import adminRouter from "./routes/admin";
 import adjudicationRouter from "./routes/adjudication";
 import authRouter from "./routes/auth";
+
+// ⭐ NEW — multi‑question voting engine
+import votingRouter from "./routes/voting";
 
 import db from "./db";
 
@@ -85,7 +88,6 @@ if (!SESSION_SECRET) {
 // CORE MIDDLEWARE
 // -----------------------------------------------------
 
-// ⭐ CRITICAL FIX: Explicit CORS origin for cookie-based auth
 app.use(
   cors({
     origin: "http://localhost:5175",
@@ -112,10 +114,10 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: isProd, // true only behind HTTPS in production
+      secure: isProd,
       httpOnly: true,
-      sameSite: "lax", // correct for local dev
-      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+      sameSite: "lax",
+      maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   })
 );
@@ -188,7 +190,9 @@ async function reflectionsUniquePerMonthMiddleware(
     next();
   } catch (err) {
     console.error("Error checking existing reflection:", err);
-    return res.status(500).json({ error: "Failed to validate reflection uniqueness." });
+    return res
+      .status(500)
+      .json({ error: "Failed to validate reflection uniqueness." });
   }
 }
 
@@ -205,6 +209,10 @@ mountedRoutes.push("GET/POST/PUT/DELETE /employees");
 
 app.use("/reflections", reflectionsUniquePerMonthMiddleware, reflectionsRouter);
 mountedRoutes.push("GET/POST /reflections");
+
+// ⭐ NEW — multi‑question voting engine
+app.use("/voting", votingRouter);
+mountedRoutes.push("GET/POST /voting/*");
 
 app.use("/votes", votesRouter);
 mountedRoutes.push("GET/POST /votes");
@@ -226,10 +234,12 @@ mountedRoutes.push("GET/POST /adjudication");
 // -----------------------------------------------------
 app.use((req, res, next) => {
   const accepts = String(req.headers.accept || "");
+
   const apiPrefixes = [
     "/auth",
     "/employees",
     "/reflections",
+    "/voting",
     "/votes",
     "/results",
     "/results-final",

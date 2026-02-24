@@ -3,6 +3,9 @@ import { Link, useLocation, useNavigate, Outlet } from "react-router-dom";
 import crgLogo from "../assets/crg-logo.png";
 import { useAuth } from "../auth";
 
+// ⭐ NEW: Step highlighting
+import { useStep } from "../context/StepContext";
+
 type Role = "Admin" | "Adjudicator" | "Employee";
 
 export default function Layout() {
@@ -10,9 +13,8 @@ export default function Layout() {
   const navigate = useNavigate();
   const { me, loading, logout } = useAuth();
 
-  const isActive = (path: string) =>
-    location.pathname === path ||
-    location.pathname.startsWith(path + "/");
+  // ⭐ NEW: read current step
+  const { currentStep } = useStep();
 
   async function handleLogout() {
     try {
@@ -57,37 +59,37 @@ export default function Layout() {
               >
                 {hasAnyRole(me, ["Employee", "Adjudicator", "Admin"]) && (
                   <NavLink
-                    to="/submit-reflection"
+                    to="/app/submit-reflection"
                     label="Submit Reflection"
-                    active={isActive("/submit-reflection")}
+                    active={currentStep === 1}   // ⭐ FIXED
                   />
                 )}
 
                 {hasRole(me, "Employee") && (
                   <NavLink
-                    to="/reflections-vote"
+                    to="/app/vote"
                     label="Reflections & Voting"
-                    active={isActive("/reflections-vote")}
+                    active={currentStep === 2}   // ⭐ FIXED
                   />
                 )}
 
                 <NavLink
                   to="/results"
                   label="Results"
-                  active={isActive("/results")}
+                  active={currentStep === 3}     // ⭐ OPTIONAL
                 />
 
                 <NavLink
                   to="/final-results"
                   label="Final Results"
-                  active={isActive("/final-results")}
+                  active={currentStep === 4}     // ⭐ OPTIONAL
                 />
 
                 {hasRole(me, "Admin") && (
                   <NavLink
                     to="/admin"
                     label="Admin"
-                    active={isActive("/admin")}
+                    active={location.pathname.startsWith("/admin")}
                   />
                 )}
 
@@ -96,8 +98,7 @@ export default function Layout() {
                     to="/adjudication"
                     label="Adjudication"
                     active={
-                      isActive("/adjudication") ||
-                      isActive("/adjudication-panel")
+                      location.pathname.startsWith("/adjudication")
                     }
                   />
                 )}
@@ -181,29 +182,23 @@ function NavLink({
    PROCESS BAR
 ------------------------------ */
 function ProcessBar() {
-  const location = useLocation();
+  const { currentStep } = useStep(); // ⭐ NEW
 
   const steps = [
-    { label: "Submit Reflection", path: "/submit-reflection" },
-    { label: "Reflections & Voting", path: "/reflections-vote" },
-    { label: "Results", path: "/results" },
-    { label: "Final Results", path: "/final-results" },
+    { label: "Submit Reflection", step: 1 },
+    { label: "Reflections & Voting", step: 2 },
+    { label: "Results", step: 3 },
+    { label: "Final Results", step: 4 },
   ];
-
-  const currentIndex = steps.findIndex(
-    (step) =>
-      location.pathname === step.path ||
-      location.pathname.startsWith(step.path + "/")
-  );
 
   return (
     <div className="flex items-center gap-4 text-sm font-medium text-slate-700 px-6">
       {steps.map((step, index) => {
-        const isCurrent = index === currentIndex;
-        const isCompleted = index < currentIndex;
+        const isCurrent = step.step === currentStep;
+        const isCompleted = step.step < currentStep;
 
         return (
-          <div key={step.path} className="flex items-center gap-3">
+          <div key={step.step} className="flex items-center gap-3">
             <div
               className={
                 isCurrent
@@ -223,7 +218,7 @@ function ProcessBar() {
                   : "text-slate-400"
               }
             >
-              {index + 1}. {step.label}
+              {step.step}. {step.label}
             </span>
 
             {index < steps.length - 1 && (
