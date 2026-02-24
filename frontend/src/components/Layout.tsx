@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, Outlet } from "react-router-dom";
 import crgLogo from "../assets/crg-logo.png";
 import { useAuth } from "../auth";
 
-// ⭐ NEW: Step highlighting
+// ⭐ Step highlighting
 import { useStep } from "../context/StepContext";
 
 type Role = "Admin" | "Adjudicator" | "Employee";
@@ -13,7 +13,6 @@ export default function Layout() {
   const navigate = useNavigate();
   const { me, loading, logout } = useAuth();
 
-  // ⭐ NEW: read current step
   const { currentStep } = useStep();
 
   async function handleLogout() {
@@ -24,13 +23,15 @@ export default function Layout() {
     }
   }
 
+  const isAdjudicator = hasRole(me, "Adjudicator");
+  const isEmployee = hasRole(me, "Employee");
+  const isAdmin = hasRole(me, "Admin");
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-crg">
-
       {/* HEADER */}
       <header className="bg-crgBlue text-white shadow sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between gap-8">
-
           {/* Left: Logo + Title */}
           <div className="flex items-center gap-4">
             <img
@@ -50,56 +51,53 @@ export default function Layout() {
 
           {/* Right: Navigation + User */}
           <div className="flex items-center gap-8">
-
             {/* NAVIGATION */}
             {!loading && me ? (
               <nav
                 className="flex items-center gap-5 text-sm font-medium"
                 aria-label="Primary"
               >
-                {hasAnyRole(me, ["Employee", "Adjudicator", "Admin"]) && (
+                {/* EMPLOYEE NAVIGATION */}
+                {isEmployee && (
+                  <>
+                    <NavLink
+                      to="/app/submit-reflection"
+                      label="Submit Reflection"
+                      active={currentStep === 1}
+                    />
+                    <NavLink
+                      to="/app/vote"
+                      label="Reflections & Voting"
+                      active={currentStep === 2}
+                    />
+                    <NavLink
+                      to="/results"
+                      label="Results"
+                      active={currentStep === 3}
+                    />
+                    <NavLink
+                      to="/final-results"
+                      label="Final Results"
+                      active={currentStep === 4}
+                    />
+                  </>
+                )}
+
+                {/* ADJUDICATOR NAVIGATION */}
+                {(isAdjudicator || isAdmin) && (
                   <NavLink
-                    to="/app/submit-reflection"
-                    label="Submit Reflection"
-                    active={currentStep === 1}   // ⭐ FIXED
+                    to="/app/adjudication"
+                    label="Adjudication"
+                    active={location.pathname.startsWith("/adjudication")}
                   />
                 )}
 
-                {hasRole(me, "Employee") && (
-                  <NavLink
-                    to="/app/vote"
-                    label="Reflections & Voting"
-                    active={currentStep === 2}   // ⭐ FIXED
-                  />
-                )}
-
-                <NavLink
-                  to="/results"
-                  label="Results"
-                  active={currentStep === 3}     // ⭐ OPTIONAL
-                />
-
-                <NavLink
-                  to="/final-results"
-                  label="Final Results"
-                  active={currentStep === 4}     // ⭐ OPTIONAL
-                />
-
-                {hasRole(me, "Admin") && (
+                {/* ADMIN NAVIGATION */}
+                {isAdmin && (
                   <NavLink
                     to="/admin"
                     label="Admin"
                     active={location.pathname.startsWith("/admin")}
-                  />
-                )}
-
-                {hasAnyRole(me, ["Adjudicator", "Admin"]) && (
-                  <NavLink
-                    to="/adjudication"
-                    label="Adjudication"
-                    active={
-                      location.pathname.startsWith("/adjudication")
-                    }
                   />
                 )}
               </nav>
@@ -133,10 +131,12 @@ export default function Layout() {
         <div className="h-[3px] w-full bg-crgGold" />
       </header>
 
-      {/* PROCESS BAR */}
-      <div className="bg-slate-100 border-b border-slate-300 py-3 sticky top-[63px] z-40">
-        <ProcessBar />
-      </div>
+      {/* PROCESS BAR — HIDDEN FOR ADJUDICATORS */}
+      {!isAdjudicator && (
+        <div className="bg-slate-100 border-b border-slate-300 py-3 sticky top-[63px] z-40">
+          <ProcessBar />
+        </div>
+      )}
 
       {/* MAIN CONTENT */}
       <main className="flex-grow max-w-4xl mx-auto w-full px-6 py-10">
@@ -182,7 +182,7 @@ function NavLink({
    PROCESS BAR
 ------------------------------ */
 function ProcessBar() {
-  const { currentStep } = useStep(); // ⭐ NEW
+  const { currentStep } = useStep();
 
   const steps = [
     { label: "Submit Reflection", step: 1 },
@@ -240,12 +240,5 @@ function hasRole(me: any, role: Role) {
   if (!me) return false;
   if (typeof me.role === "string") return me.role === role;
   if (Array.isArray(me.roles)) return me.roles.includes(role);
-  return false;
-}
-
-function hasAnyRole(me: any, roles: Role[]) {
-  if (!me) return false;
-  if (typeof me.role === "string") return roles.includes(me.role as Role);
-  if (Array.isArray(me.roles)) return roles.some((r) => me.roles.includes(r));
   return false;
 }

@@ -7,33 +7,41 @@ import Layout from "./components/Layout";
 import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
 import { useAuth } from "./auth";
+import AdjudicationPanel from "./pages/AdjudicationPanel";
 
 const ChangePassword = React.lazy(() => import("./pages/ChangePassword"));
 import SubmitReflection from "./pages/SubmitReflection";
-import Vote from "./pages/Vote"; // ✅ new voting page route
+import Vote from "./pages/Vote"; // voting page
 
 export default function App() {
   const { me, loading } = useAuth();
 
-  // While auth is loading, avoid rendering routes prematurely
   if (loading) {
     return <div>Loading…</div>;
   }
 
+  // Narrow helper so we don't fight the me type
+  const isAdjudicator = (me as any)?.is_adjudicator;
+
+  // Helper: determine landing page based on role
+  const landingFor = (user: any) => {
+    if (!user) return "/login";
+    if ((user as any).is_adjudicator) return "/app/adjudication";
+    return "/app/submit-reflection";
+  };
+
   return (
     <Routes>
-      {/* Redirect root to login or app depending on auth */}
+      {/* ROOT: redirect based on role */}
       <Route
         path="/"
-        element={
-          me ? <Navigate to="/app" replace /> : <Navigate to="/login" replace />
-        }
+        element={<Navigate to={landingFor(me)} replace />}
       />
 
-      {/* LOGIN ROUTE — redirect authenticated users away */}
+      {/* LOGIN */}
       <Route
         path="/login"
-        element={me ? <Navigate to="/app" replace /> : <Login />}
+        element={me ? <Navigate to={landingFor(me)} replace /> : <Login />}
       />
 
       {/* CHANGE PASSWORD */}
@@ -41,7 +49,7 @@ export default function App() {
         path="/change-password"
         element={
           me && !me.must_change_password ? (
-            <Navigate to="/app" replace />
+            <Navigate to={landingFor(me)} replace />
           ) : (
             <Suspense fallback={<div>Loading…</div>}>
               <ChangePassword />
@@ -59,14 +67,27 @@ export default function App() {
           </RequireAuth>
         }
       >
-        {/* Default route inside /app */}
-        <Route index element={<Navigate to="submit-reflection" replace />} />
+        {/* DEFAULT INSIDE /app */}
+        <Route
+          index
+          element={
+            isAdjudicator ? (
+              <Navigate to="adjudication" replace />
+            ) : (
+              <Navigate to="submit-reflection" replace />
+            )
+          }
+        />
 
-        {/* STEP 1 — Submit Reflection */}
+        {/* EMPLOYEE ROUTES */}
         <Route path="submit-reflection" element={<SubmitReflection />} />
-
-        {/* STEP 2 — Voting */}
         <Route path="vote" element={<Vote />} />
+
+        {/* ADJUDICATOR ROUTE */}
+        <Route
+          path="adjudication"
+          element={<AdjudicationPanel />}
+        />
       </Route>
 
       {/* FALLBACK */}

@@ -73,21 +73,23 @@ interface RoundHistoryPayload {
 export default function AdjudicationPanel() {
   const [month, setMonth] = useState("2026-02");
   const [panel, setPanel] = useState<PanelPayload | null>(null);
-  const [roundHistory, setRoundHistory] = useState<RoundHistoryPayload | null>(
-    null
-  );
+  const [roundHistory, setRoundHistory] = useState<RoundHistoryPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
   const [guidelinesOpen, setGuidelinesOpen] = useState(false);
 
+  /* -----------------------------------------------------
+     LOAD PANEL (GET /adjudication/panel?month=YYYY-MM)
+  ----------------------------------------------------- */
   async function loadPanel() {
     setLoading(true);
     setMessage("");
 
     try {
       const res = await fetch(
-        `http://localhost:3000/adjudication/panel?month=${month}`
+        `http://localhost:3000/adjudication/panel?month=${month}`,
+        { credentials: "include" }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -104,10 +106,14 @@ export default function AdjudicationPanel() {
     }
   }
 
+  /* -----------------------------------------------------
+     LOAD ROUND HISTORY (GET /adjudication/round-history?month=YYYY-MM)
+  ----------------------------------------------------- */
   async function loadRoundHistory() {
     try {
       const res = await fetch(
-        `http://localhost:3000/adjudication/round-history?month=${month}`
+        `http://localhost:3000/adjudication/round-history?month=${month}`,
+        { credentials: "include" }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -125,16 +131,20 @@ export default function AdjudicationPanel() {
     loadRoundHistory();
   }, [month]);
 
+  /* -----------------------------------------------------
+     START ROUND (POST)
+  ----------------------------------------------------- */
   async function startRound() {
     setLoading(true);
     setMessage("");
 
     try {
       const res = await fetch("http://localhost:3000/adjudication/start-round", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ month_key: month }),
-      });
+       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ month_key: month }),
+});
 
       const data = await res.json();
       if (!res.ok) {
@@ -152,19 +162,23 @@ export default function AdjudicationPanel() {
     }
   }
 
+  /* -----------------------------------------------------
+     CAST ROUND VOTE (POST)
+  ----------------------------------------------------- */
   async function castRoundVote(candidateId: number) {
     setLoading(true);
     setMessage("");
 
     try {
       const res = await fetch("http://localhost:3000/adjudication/round-vote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          month_key: month,
-          candidate_id: candidateId,
-        }),
-      });
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+      month_key: month,
+      candidate_id: candidateId,
+  }),
+});
 
       const data = await res.json();
       if (!res.ok) {
@@ -182,19 +196,20 @@ export default function AdjudicationPanel() {
     }
   }
 
+  /* -----------------------------------------------------
+     FINALISE WINNER (POST)
+  ----------------------------------------------------- */
   async function finaliseWinner() {
     setLoading(true);
     setMessage("");
 
     try {
-      const res = await fetch(
-        "http://localhost:3000/adjudication/finalise-winner",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ month_key: month }),
-        }
-      );
+      const res = await fetch("http://localhost:3000/adjudication/finalise-winner", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ month_key: month }),
+});
 
       const data = await res.json();
       if (!res.ok) {
@@ -212,6 +227,9 @@ export default function AdjudicationPanel() {
     }
   }
 
+  /* -----------------------------------------------------
+     EMPTY PANEL STATE
+  ----------------------------------------------------- */
   if (!panel) {
     return (
       <div className="p-8 text-slate-700">
@@ -343,7 +361,7 @@ export default function AdjudicationPanel() {
         </div>
       )}
 
-      {/* Candidate grid (employee votes) */}
+      {/* Candidate grid */}
       {!currentRound && !finalWinner && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
           {candidates.map((c) => {

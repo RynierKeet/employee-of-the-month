@@ -1,4 +1,5 @@
 // src/utils/auth.ts
+
 export interface AuthUser {
   id?: number;
   name?: string;
@@ -6,6 +7,11 @@ export interface AuthUser {
   role?: "Admin" | "Adjudicator" | "Employee";
   roles?: string[];
   must_change_password?: boolean;
+
+  // ⭐ Derived convenience flags
+  is_adjudicator?: boolean;
+  is_admin?: boolean;
+  is_employee?: boolean;
 }
 
 /**
@@ -23,7 +29,6 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
     if (res.status === 401) return null;
     if (!res.ok) return null;
 
-    // Guard against empty body or non-JSON responses
     const text = await res.text().catch(() => "");
     if (!text) return null;
 
@@ -32,19 +37,29 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 
     try {
       const json = JSON.parse(text);
+
       // Support both { user: {...} } and direct user object responses
       const user = (json && (json.user ?? json)) as AuthUser | undefined;
+      if (!user) return null;
+
+      // ⭐ Add derived flags based on role
+      user.is_adjudicator = user.role === "Adjudicator";
+      user.is_admin = user.role === "Admin";
+      user.is_employee = user.role === "Employee";
+
       if (import.meta.env.DEV) {
-        // eslint-disable-next-line no-console
-        console.debug("[utils/auth] fetchCurrentUser ->", { status: res.status, user });
+        console.debug("[utils/auth] fetchCurrentUser ->", {
+          status: res.status,
+          user,
+        });
       }
-      return user ?? null;
+
+      return user;
     } catch {
       return null;
     }
   } catch (err) {
     if (import.meta.env.DEV) {
-      // eslint-disable-next-line no-console
       console.debug("[utils/auth] fetchCurrentUser error", err);
     }
     return null;
@@ -63,6 +78,6 @@ export async function logout(): Promise<void> {
       credentials: "include",
     });
   } catch {
-    // swallow network errors; caller should still clear client state
+    // swallow network errors
   }
 }
