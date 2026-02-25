@@ -4,10 +4,11 @@ import dotenv from "dotenv";
 import session from "express-session";
 import fs from "fs";
 import path from "path";
+import https from "https";
 
 import employeesRouter from "./routes/employees";
 import reflectionsRouter from "./routes/reflections";
-import votesRouter from "./routes/votes";          // results aggregator
+import votesRouter from "./routes/votes";
 import resultsRouter from "./routes/results";
 import resultsFinalRouter from "./routes/results-final";
 import adminRouter from "./routes/admin";
@@ -23,12 +24,20 @@ dotenv.config();
 
 const app = express();
 
-// Use require for connect-sqlite3 to avoid missing type declarations in TS.
-const SQLiteStore: any = require("connect-sqlite3")(session);
+// -----------------------------------------------------
+// HTTPS CERTIFICATES FOR LOCAL DEVELOPMENT
+// -----------------------------------------------------
+const key = fs.readFileSync(path.join(process.cwd(), "certs", "localhost-key.pem"));
+const cert = fs.readFileSync(path.join(process.cwd(), "certs", "localhost.pem"));
 
 // -----------------------------------------------------
-// Ensure session directory exists
+// SESSION STORE
 // -----------------------------------------------------
+const SQLiteStore: any = require("connect-sqlite3")(session);
+
+/* -----------------------------------------------------
+   Ensure session directory exists
+----------------------------------------------------- */
 const sessionDir = path.resolve(process.cwd(), "var");
 try {
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -36,9 +45,9 @@ try {
   console.error("Could not create session directory:", err);
 }
 
-// -----------------------------------------------------
-// RATE LIMITER
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   RATE LIMITER
+----------------------------------------------------- */
 let createRateLimit: any = null;
 try {
   createRateLimit = require("express-rate-limit");
@@ -57,9 +66,9 @@ const loginLimiter =
       })
     : ((req: express.Request, res: express.Response, next: express.NextFunction) => next());
 
-// -----------------------------------------------------
-// LOGGER
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   LOGGER
+----------------------------------------------------- */
 let morganMiddleware: any = null;
 try {
   const morgan = require("morgan");
@@ -72,9 +81,9 @@ try {
   console.warn("morgan not installed; using simple console logger.");
 }
 
-// -----------------------------------------------------
-// SESSION SECRET
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   SESSION SECRET
+----------------------------------------------------- */
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET && process.env.NODE_ENV === "production") {
   console.error("SESSION_SECRET is not set. Exiting.");
@@ -84,13 +93,14 @@ if (!SESSION_SECRET) {
   console.warn("SESSION_SECRET not set — using dev fallback.");
 }
 
-// -----------------------------------------------------
-// CORE MIDDLEWARE
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   CORE MIDDLEWARE
+----------------------------------------------------- */
 
+// ⭐ IMPORTANT: Frontend will run on HTTPS now
 app.use(
   cors({
-    origin: "http://localhost:5175",
+    origin: "https://localhost:5175",
     credentials: true,
   })
 );
@@ -102,10 +112,11 @@ app.use(morganMiddleware);
 // Mount the limiter specifically on the login endpoint
 app.use("/auth/login", loginLimiter);
 
-// -----------------------------------------------------
-// SESSION MIDDLEWARE
-// -----------------------------------------------------
-const isProd = process.env.NODE_ENV === "production";
+/* -----------------------------------------------------
+   SESSION MIDDLEWARE — NOW HTTPS‑COMPATIBLE
+----------------------------------------------------- */
+
+app.set("trust proxy", 1); // ⭐ REQUIRED for Secure + SameSite=None cookies
 
 app.use(
   session({
@@ -114,25 +125,25 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: isProd,
       httpOnly: true,
-      sameSite: "lax",
+      secure: true,      // ⭐ REQUIRED for SameSite=None
+      sameSite: "none",  // ⭐ REQUIRED for cross-origin cookies
       maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   })
 );
 
-// -----------------------------------------------------
-// SIMPLE REQUEST LOGGER
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   SIMPLE REQUEST LOGGER
+----------------------------------------------------- */
 app.use((req, _res, next) => {
   console.debug(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
   next();
 });
 
-// -----------------------------------------------------
-// GLOBAL ADJUDICATION MODE FLAG
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   GLOBAL ADJUDICATION MODE FLAG
+----------------------------------------------------- */
 let adjudicationMode = false;
 
 app.get("/admin/adjudication/status", (_req, res) => {
@@ -149,16 +160,16 @@ app.post("/admin/adjudication/end", (_req, res) => {
   res.json({ success: true, adjudicationMode });
 });
 
-// -----------------------------------------------------
-// HEALTH CHECK
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   HEALTH CHECK
+----------------------------------------------------- */
 app.get("/", (_req, res) => {
   res.json({ status: "EOM backend running" });
 });
 
-// -----------------------------------------------------
-// REFLECTIONS UNIQUE‑PER‑MONTH MIDDLEWARE
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   REFLECTIONS UNIQUE‑PER‑MONTH MIDDLEWARE
+----------------------------------------------------- */
 async function reflectionsUniquePerMonthMiddleware(
   req: express.Request,
   res: express.Response,
@@ -196,9 +207,9 @@ async function reflectionsUniquePerMonthMiddleware(
   }
 }
 
-// -----------------------------------------------------
-// ROUTE MOUNTING
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   ROUTE MOUNTING
+----------------------------------------------------- */
 const mountedRoutes: string[] = [];
 
 app.use("/auth", authRouter);
@@ -229,9 +240,9 @@ mountedRoutes.push("GET/POST/PUT/DELETE /admin/*");
 app.use("/adjudication", adjudicationRouter);
 mountedRoutes.push("GET/POST /adjudication");
 
-// -----------------------------------------------------
-// JSON 404 FOR API ROUTES
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   JSON 404 FOR API ROUTES
+----------------------------------------------------- */
 app.use((req, res, next) => {
   const accepts = String(req.headers.accept || "");
 
@@ -256,16 +267,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// -----------------------------------------------------
-// GENERIC 404
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   GENERIC 404
+----------------------------------------------------- */
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// -----------------------------------------------------
-// CENTRAL ERROR HANDLER
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   CENTRAL ERROR HANDLER
+----------------------------------------------------- */
 app.use(
   (
     err: any,
@@ -286,9 +297,9 @@ app.use(
   }
 );
 
-// -----------------------------------------------------
-// ENSURE UNIQUE INDEX ON REFLECTIONS
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   ENSURE UNIQUE INDEX ON REFLECTIONS
+----------------------------------------------------- */
 async function ensureUniqueIndex() {
   try {
     await db.run(
@@ -300,9 +311,9 @@ async function ensureUniqueIndex() {
   }
 }
 
-// -----------------------------------------------------
-// START SERVER
-// -----------------------------------------------------
+/* -----------------------------------------------------
+   START HTTPS SERVER
+----------------------------------------------------- */
 const PORT = Number(process.env.PORT || 3000);
 
 (async () => {
@@ -312,8 +323,8 @@ const PORT = Number(process.env.PORT || 3000);
     console.warn("ensureUniqueIndex error:", err);
   }
 
-  app.listen(PORT, () => {
-    console.log(`EOM backend running on http://localhost:${PORT}`);
+  https.createServer({ key, cert }, app).listen(PORT, () => {
+    console.log(`HTTPS backend running on https://localhost:${PORT}`);
     console.log("Mounted API prefixes:");
     mountedRoutes.forEach((r) => console.log("  " + r));
   });

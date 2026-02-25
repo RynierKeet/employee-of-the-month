@@ -1,3 +1,4 @@
+// backend/routes/adjudication.ts
 import { Router } from "express";
 import { getCurrentUser, getIdentity } from "../utils/auth";
 import db from "../db";
@@ -210,6 +211,8 @@ router.get("/panel", async (req, res) => {
 
 /* -----------------------------------------------------
    POST /adjudication/start-round
+   Creates a new adjudication round either from employee tie
+   (no prior rounds) or from a tie in the last adjudication round.
 ----------------------------------------------------- */
 router.post("/start-round", async (req, res) => {
   try {
@@ -231,46 +234,7 @@ router.post("/start-round", async (req, res) => {
       return res.status(409).json({ error: "Winner already finalised" });
     }
 
-    const voteTotals = await db.all(
-      `
-      SELECT nominee_id AS employee_id,
-             COUNT(*) AS votes
-      FROM votes
-      WHERE month_key = ?
-        AND is_final = 1
-        AND question_key != 'adjudication'
-      GROUP BY nominee_id
-      `,
-      [month_key]
-    );
-
-    if (!voteTotals.length) {
-      return res.status(400).json({ error: "No employee votes found" });
-    }
-
-    const maxVotes = Math.max(...voteTotals.map((v: any) => v.votes));
-    const tied = voteTotals.filter((v: any) => v.votes === maxVotes);
-
-    if (tied.length < 2) {
-      return res.status(400).json({ error: "No tie detected" });
-    }
-
-    // Safety: remove adjudicators from tied list
-    const filteredTied: any[] = [];
-    for (const t of tied) {
-      const emp = await db.get(
-        `SELECT is_adjudicator FROM employees WHERE id = ?`,
-        [t.employee_id]
-      );
-      if (emp?.is_adjudicator === 0) {
-        filteredTied.push(t);
-      }
-    }
-
-    if (filteredTied.length < 2) {
-      return res.status(400).json({ error: "No valid tie among employees" });
-    }
-
+    // Find last round number (if any)
     const row = await db.get(
       `
       SELECT MAX(round_number) AS round_number
@@ -279,9 +243,95 @@ router.post("/start-round", async (req, res) => {
       `,
       [month_key]
     );
-    const nextRound = (row?.round_number || 0) + 1;
+    const lastRound = row?.round_number || 0;
 
-    for (const t of filteredTied) {
+    // CASE A: No rounds yet -> use employee votes tie
+    if (lastRound === 0) {
+      const voteTotals = await db.all(
+        `
+        SELECT nominee_id AS employee_id,
+               COUNT(*) AS votes
+        FROM votes
+        WHERE month_key = ?
+          AND is_final = 1
+          AND question_key != 'adjudication'
+        GROUP BY nominee_id
+        `,
+        [month_key]
+      );
+
+      if (!voteTotals.length) {
+        return res.status(400).json({ error: "No employee votes found" });
+      }
+
+      const maxVotes = Math.max(...voteTotals.map((v: any) => v.votes));
+      const tied = voteTotals.filter((v: any) => v.votes === maxVotes);
+
+      if (tied.length < 2) {
+        return res.status(400).json({ error: "No tie detected" });
+      }
+
+      // Safety: remove adjudicators from tied list
+      const filteredTied: any[] = [];
+      for (const t of tied) {
+        const emp = await db.get(
+          `SELECT is_adjudicator FROM employees WHERE id = ?`,
+          [t.employee_id]
+        );
+        if (emp?.is_adjudicator === 0) {
+          filteredTied.push(t);
+        }
+      }
+
+      if (filteredTied.length < 2) {
+        return res.status(400).json({ error: "No valid tie among employees" });
+      }
+
+      const nextRound = 1;
+
+      for (const t of filteredTied) {
+        await db.run(
+          `
+          INSERT INTO adjudication_rounds (month_key, round_number, candidate_id, votes)
+          VALUES (?, ?, ?, 0)
+          `,
+          [month_key, nextRound, t.employee_id]
+        );
+      }
+
+      return res.json({
+        success: true,
+        month_key,
+        round_number: nextRound,
+        candidates: filteredTied,
+      });
+    }
+
+    // CASE B: Rounds already exist -> derive tie from last round
+    const roundCandidates = await db.all(
+      `
+      SELECT candidate_id AS employee_id, votes
+      FROM adjudication_rounds
+      WHERE month_key = ?
+        AND round_number = ?
+      `,
+      [month_key, lastRound]
+    );
+
+    if (!roundCandidates.length) {
+      return res.status(400).json({ error: "No candidates in last adjudication round" });
+    }
+
+    const maxRoundVotes = Math.max(...roundCandidates.map((c: any) => c.votes));
+    const tiedRound = roundCandidates.filter((c: any) => c.votes === maxRoundVotes);
+
+    if (tiedRound.length < 2) {
+      return res.status(400).json({ error: "No tie in last adjudication round" });
+    }
+
+    const nextRound = lastRound + 1;
+
+    for (const t of tiedRound) {
       await db.run(
         `
         INSERT INTO adjudication_rounds (month_key, round_number, candidate_id, votes)
@@ -295,7 +345,7 @@ router.post("/start-round", async (req, res) => {
       success: true,
       month_key,
       round_number: nextRound,
-      candidates: filteredTied,
+      candidates: tiedRound,
     });
   } catch (err) {
     console.error("Error starting adjudication round:", err);
@@ -305,6 +355,9 @@ router.post("/start-round", async (req, res) => {
 
 /* -----------------------------------------------------
    POST /adjudication/round-vote
+   Cast an adjudicator vote and, if this completes the round,
+   determine winner or tie and advance/create next round.
+   (Idempotent and robust implementation)
 ----------------------------------------------------- */
 router.post("/round-vote", async (req, res) => {
   try {
@@ -364,6 +417,7 @@ router.post("/round-vote", async (req, res) => {
       return res.status(409).json({ error: "You already voted in this round" });
     }
 
+    // Insert the adjudicator's vote
     await db.run(
       `
       INSERT INTO adjudication_round_votes (month_key, round_number, adjudicator_id, candidate_id)
@@ -372,6 +426,7 @@ router.post("/round-vote", async (req, res) => {
       [month_key, currentRound, adjudicatorId, candidateId]
     );
 
+    // Increment candidate's vote tally for the round
     await db.run(
       `
       UPDATE adjudication_rounds
@@ -383,7 +438,111 @@ router.post("/round-vote", async (req, res) => {
       [month_key, currentRound, candidateId]
     );
 
-    return res.json({ success: true });
+    // Recompute adjudicator count and votes for this round
+    const adjudicators = await db.all(
+      `SELECT id FROM employees WHERE is_adjudicator = 1`
+    );
+    const adjudicatorCount = adjudicators.length;
+
+    const roundVotes = await db.all(
+      `
+      SELECT adjudicator_id, candidate_id
+      FROM adjudication_round_votes
+      WHERE month_key = ?
+        AND round_number = ?
+      `,
+      [month_key, currentRound]
+    );
+
+    const roundVotesCount = roundVotes.length;
+
+    // If not all adjudicators have voted, return current state
+    if (roundVotesCount < adjudicatorCount) {
+      const roundCandidatesPartial = await db.all(
+        `SELECT candidate_id AS employee_id, votes FROM adjudication_rounds WHERE month_key = ? AND round_number = ?`,
+        [month_key, currentRound]
+      );
+      return res.json({
+        success: true,
+        roundComplete: false,
+        adjudicatorCount,
+        roundVotesCount,
+        roundCandidates: roundCandidatesPartial,
+      });
+    }
+
+    // All adjudicators have voted — determine result
+    const roundCandidates = await db.all(
+      `
+      SELECT candidate_id AS employee_id, votes
+      FROM adjudication_rounds
+      WHERE month_key = ?
+        AND round_number = ?
+      `,
+      [month_key, currentRound]
+    );
+
+    if (!roundCandidates.length) {
+      return res.status(500).json({ error: "Round candidates missing" });
+    }
+
+    const maxVotes = Math.max(...roundCandidates.map((c: any) => c.votes));
+    const top = roundCandidates.filter((c: any) => c.votes === maxVotes);
+
+    if (top.length === 1) {
+      // Single winner — finalise (idempotent)
+      const winnerId = top[0].employee_id;
+
+      const existingFinal = await db.get(
+        `SELECT 1 FROM results_final WHERE month_key = ?`,
+        [month_key]
+      );
+      if (!existingFinal) {
+        await db.run(
+          `
+          INSERT INTO results_final (employee_id, month_key)
+          VALUES (?, ?)
+          `,
+          [winnerId, month_key]
+        );
+      }
+
+      return res.json({
+        success: true,
+        roundComplete: true,
+        winner: winnerId,
+      });
+    } else {
+      // Tie — create next adjudication round with tied candidates
+      const nextRound = currentRound + 1;
+
+      // Guard: ensure next round not already created for these candidates
+      const existingNext = await db.all(
+        `SELECT candidate_id FROM adjudication_rounds WHERE month_key = ? AND round_number = ?`,
+        [month_key, nextRound]
+      );
+      const existingNextIds = new Set(existingNext.map((r: any) => r.candidate_id));
+
+      for (const t of top) {
+        if (!existingNextIds.has(t.employee_id)) {
+          await db.run(
+            `
+            INSERT INTO adjudication_rounds (month_key, round_number, candidate_id, votes)
+            VALUES (?, ?, ?, 0)
+            `,
+            [month_key, nextRound, t.employee_id]
+          );
+        }
+      }
+
+      return res.json({
+        success: true,
+        roundComplete: true,
+        tie: true,
+        nextRound,
+        tiedCandidates: top.map((t) => t.employee_id),
+      });
+    }
   } catch (err) {
     console.error("Error casting round vote:", err);
     return res.status(500).json({ error: "Failed to cast round vote" });

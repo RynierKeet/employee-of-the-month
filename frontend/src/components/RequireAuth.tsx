@@ -14,7 +14,7 @@ export default function RequireAuth({ children }: Props) {
   const location = useLocation();
   const { me, loading } = useAuth();
 
-  // While loading
+  // Still loading session
   if (loading) {
     return (
       <div style={{ padding: "2rem", textAlign: "center" }} aria-live="polite">
@@ -33,9 +33,14 @@ export default function RequireAuth({ children }: Props) {
     return <Navigate to="/change-password" state={{ from: location }} replace />;
   }
 
-  const isEmployee = me.role === "Employee";
-  const isAdjudicator = me.role === "Adjudicator";
-  const isAdmin = me.role === "Admin";
+  // IMPORTANT:
+  // me.role is now the *effective* role (Admin / Adjudicator / Employee)
+  // because the backend applies overrideRole before returning /auth/me.
+  const effectiveRole = me.role as Role;
+
+  const isEmployee = effectiveRole === "Employee";
+  const isAdjudicator = effectiveRole === "Adjudicator";
+  const isAdmin = effectiveRole === "Admin";
 
   const path = location.pathname;
 
@@ -62,8 +67,7 @@ export default function RequireAuth({ children }: Props) {
     }
   }
 
-  // Admin can go anywhere — no restrictions
+  // Admin can go anywhere
 
-  // Authorized
   return children ? <>{children}</> : <Outlet />;
 }

@@ -3,30 +3,36 @@ import React, { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 
 /**
- * Login page
+ * Login page with two-phase flow:
+ * 1. Credentials → POST /auth/login
+ * 2. Role selection → POST /auth/select-role
  *
- * Flow:
- * 1. POST /auth/login with credentials included so the server can set a session cookie.
- * 2. Poll /auth/me until the session is recognized (works around cookie race).
- * 3. If server indicates first-time user (must_change_password), redirect to /change-password.
- * 4. On success, navigate to the original destination.
- *
- * Notes:
- * - All fetches use credentials: "include" so HttpOnly session cookies are accepted/sent.
- * - Employee creation is now Admin-only (Option B), so auto-create logic has been removed.
+ * Fully compatible with your existing session polling logic.
  */
+
+type Role = "Admin" | "Adjudicator" | "Employee";
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as any)?.from?.pathname ?? "/";
 
+  // Phase control
+  const [phase, setPhase] = useState<"credentials" | "role">("credentials");
+
+  // Credentials
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // Role selection
+  const [availableRoles, setAvailableRoles] = useState<Role[]>([]);
+  const [selectedRole, setSelectedRole] = useState<Role | "">("");
+
+  // UI state
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Poll /auth/me until server recognizes the session (or timeout)
+  /** Poll /auth/me until session cookie is active */
   async function pollForSession(maxAttempts = 12, delayMs = 300) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -34,15 +40,14 @@ export default function Login() {
         if (meRes.ok) {
           return { ok: true, json: await meRes.json().catch(() => null) };
         }
-      } catch {
-        // ignore and retry
-      }
+      } catch {}
       await new Promise((r) => setTimeout(r, delayMs));
     }
     return { ok: false, json: null };
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  /** Phase 1: Submit credentials */
+  async function handleCredentialsSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
@@ -59,10 +64,9 @@ export default function Login() {
     setSubmitting(true);
 
     try {
-      // 1) Attempt login
       const res = await fetch("/auth/login", {
         method: "POST",
-        credentials: "include", // critical so browser accepts/sends session cookie
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: trimmedEmail, password }),
       });
@@ -70,9 +74,7 @@ export default function Login() {
       let body: any = null;
       try {
         body = await res.json();
-      } catch {
-        body = null;
-      }
+      } catch {}
 
       if (!res.ok) {
         const msg = body?.error ?? body?.message ?? `Login failed (${res.status})`;
@@ -81,30 +83,129 @@ export default function Login() {
         return;
       }
 
-      // If backend indicates the user must change password immediately, redirect.
+      // Must change password?
       if (body?.mustChangePassword || body?.must_change_password) {
         navigate("/change-password", { replace: true, state: { from } });
         return;
       }
 
-      // 2) Poll /auth/me until session is usable
-      const poll = await pollForSession(12, 300);
-      if (poll.ok) {
-        // Full reload ensures cookie is attached and app boots authenticated.
-        window.location.href = from;
+      // NEW: Role selection phase
+      const roles = body?.availableRoles ?? [];
+      if (!Array.isArray(roles) || roles.length === 0) {
+        setError("No roles available for this user.");
+        setSubmitting(false);
         return;
       }
 
-      setError(
-        "Login succeeded but session was not established. Try again or contact an administrator."
-      );
+      setAvailableRoles(roles);
+      setSelectedRole(roles[0]);
+      setPhase("role");
+      setSubmitting(false);
+      return;
     } catch (err: any) {
       setError(err?.message ?? "Login failed");
+      setSubmitting(false);
+    }
+  }
+
+  /** Phase 2: Submit selected role */
+  async function handleRoleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedRole) return;
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/auth/select-role", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: selectedRole }),
+      });
+
+      const body = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg = body?.error ?? "Failed to select role";
+        setError(msg);
+        setSubmitting(false);
+        return;
+      }
+
+      // After selecting role, poll session to ensure override is active
+      const poll = await pollForSession(12, 300);
+      if (!poll.ok) {
+        setError("Role selected but session not established. Try again.");
+        setSubmitting(false);
+        return;
+      }
+
+      // Redirect based on role
+      if (selectedRole === "Adjudicator") {
+        window.location.href = "/app/adjudication";
+        return;
+      }
+      if (selectedRole === "Admin") {
+        window.location.href = "/app/admin";
+        return;
+      }
+
+      // Employee
+      window.location.href = "/app/submit-reflection";
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to select role");
     } finally {
       setSubmitting(false);
     }
   }
 
+  // ---------------------------
+  // Phase 2 UI: Role selection
+  // ---------------------------
+  if (phase === "role") {
+    return (
+      <div className="max-w-md mx-auto px-4 py-8">
+        <h2 className="text-2xl font-semibold mb-4">Select your role</h2>
+
+        {error && (
+          <div className="mb-4 rounded px-3 py-2 text-white bg-red-600">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleRoleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Role</label>
+            <select
+              className="w-full border px-3 py-2 rounded"
+              value={selectedRole}
+              onChange={(e) => setSelectedRole(e.target.value as Role)}
+              disabled={submitting}
+            >
+              {availableRoles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className="bg-crgBlue text-white px-4 py-2 rounded disabled:opacity-60"
+          >
+            {submitting ? "Continuing…" : "Continue"}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // ---------------------------
+  // Phase 1 UI: Credentials
+  // ---------------------------
   return (
     <div className="max-w-md mx-auto px-4 py-8">
       <h2 className="text-2xl font-semibold mb-4">Sign in</h2>
@@ -125,7 +226,7 @@ export default function Login() {
       )}
 
       <form
-        onSubmit={handleSubmit}
+        onSubmit={handleCredentialsSubmit}
         className="space-y-4"
         aria-describedby={error ? "login-error" : undefined}
       >

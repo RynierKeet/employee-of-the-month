@@ -59,6 +59,63 @@ router.get("/", async (req, res) => {
 });
 
 /* -----------------------------------------------------
+   GET /votes/my?month=YYYY-MM
+   Returns the logged-in user's votes for the month.
+   Shape:
+   {
+     month: "2026-02",
+     votes: {
+       achievements: [12],
+       impact: [12],
+       values: [12],
+       growth: [12],
+       beyond: [12]
+     }
+   }
+----------------------------------------------------- */
+router.get("/my", async (req, res) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Not logged in" });
+    }
+
+    const rawMonth =
+      typeof req.query.month === "string" ? req.query.month : "";
+    const month_key = normalizeMonthKey(rawMonth);
+
+    if (!month_key) {
+      return res.status(400).json({ error: "Missing or invalid month" });
+    }
+
+    const rows = await db.all(
+      `
+      SELECT question_key, nominee_id
+      FROM votes
+      WHERE employee_id = ?
+        AND month_key = ?
+      `,
+      [user.id, month_key]
+    );
+
+    const grouped: Record<string, number[]> = {};
+
+    for (const r of rows) {
+      if (!grouped[r.question_key]) grouped[r.question_key] = [];
+      grouped[r.question_key].push(r.nominee_id);
+    }
+
+    return res.json({
+      month: month_key,
+      votes: grouped,
+    });
+  } catch (err) {
+    console.error("Error fetching my votes:", err);
+    return res.status(500).json({ error: "Failed to fetch my votes" });
+  }
+});
+
+/* -----------------------------------------------------
    POST /votes/save
    Saves a single vote (draft or final).
    BACKEND SAFETY ADDED:

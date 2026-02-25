@@ -11,7 +11,10 @@ import AdjudicationPanel from "./pages/AdjudicationPanel";
 
 const ChangePassword = React.lazy(() => import("./pages/ChangePassword"));
 import SubmitReflection from "./pages/SubmitReflection";
-import Vote from "./pages/Vote"; // voting page
+import Vote from "./pages/Vote";
+
+// ⭐ Ceremony Page
+import CeremonyPage from "./pages/CeremonyPage";
 
 export default function App() {
   const { me, loading } = useAuth();
@@ -20,23 +23,22 @@ export default function App() {
     return <div>Loading…</div>;
   }
 
-  // Narrow helper so we don't fight the me type
-  const isAdjudicator = (me as any)?.is_adjudicator;
+  // IMPORTANT:
+  // me.role is now the EFFECTIVE role (Admin / Adjudicator / Employee)
+  const effectiveRole = me?.role;
 
-  // Helper: determine landing page based on role
   const landingFor = (user: any) => {
     if (!user) return "/login";
-    if ((user as any).is_adjudicator) return "/app/adjudication";
+
+    if (user.role === "Adjudicator") return "/app/adjudication";
+    if (user.role === "Admin") return "/app/admin"; // optional if you add an admin dashboard
     return "/app/submit-reflection";
   };
 
   return (
     <Routes>
-      {/* ROOT: redirect based on role */}
-      <Route
-        path="/"
-        element={<Navigate to={landingFor(me)} replace />}
-      />
+      {/* ROOT */}
+      <Route path="/" element={<Navigate to={landingFor(me)} replace />} />
 
       {/* LOGIN */}
       <Route
@@ -67,11 +69,11 @@ export default function App() {
           </RequireAuth>
         }
       >
-        {/* DEFAULT INSIDE /app */}
+        {/* DEFAULT inside /app */}
         <Route
           index
           element={
-            isAdjudicator ? (
+            effectiveRole === "Adjudicator" ? (
               <Navigate to="adjudication" replace />
             ) : (
               <Navigate to="submit-reflection" replace />
@@ -84,10 +86,10 @@ export default function App() {
         <Route path="vote" element={<Vote />} />
 
         {/* ADJUDICATOR ROUTE */}
-        <Route
-          path="adjudication"
-          element={<AdjudicationPanel />}
-        />
+        <Route path="adjudication" element={<AdjudicationPanel />} />
+
+        {/* ⭐ Ceremony Page */}
+        <Route path="ceremony" element={<CeremonyPage />} />
       </Route>
 
       {/* FALLBACK */}

@@ -1,19 +1,14 @@
 // src/pages/VotingSummary.tsx
-import React, { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-type Nominee = {
-  nominee_id: number;
-  nominee_name: string;
-  answer?: string;
-  vote_count?: number;
+type AggregatedResult = {
+  employee_id: number;
+  employee_name: string;
+  total_votes: number;
 };
 
-type QuestionResult = {
-  question_key: string;
-  question_label: string;
-  nominees: Nominee[];
-};
+type MyVotesMap = Record<string, number[]>;
 
 const STORAGE_KEY = "crg_voting_draft_v1";
 
@@ -21,166 +16,137 @@ export default function VotingSummary({ month }: { month?: string }) {
   const navigate = useNavigate();
   const effectiveMonth = month ?? new Date().toISOString().slice(0, 7);
 
-  const [results, setResults] = useState<QuestionResult[]>([]);
-  const [myVotes, setMyVotes] = useState<Record<string, number[]>>({});
+  const [results, setResults] = useState<AggregatedResult[]>([]);
+  const [myVotes, setMyVotes] = useState<MyVotesMap>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      // 1) Fetch aggregated results
-      const r = await fetch(`/voting/results?month=${effectiveMonth}`, {
+      // 1) Fetch aggregated final results
+      const r = await fetch(`/votes?month=${effectiveMonth}`, {
         credentials: "include",
       });
       const resJson = await r.json().catch(() => null);
-      const fetchedResults: QuestionResult[] = resJson?.results ?? resJson ?? [];
+      const fetchedResults: AggregatedResult[] = Array.isArray(resJson)
+        ? resJson
+        : [];
       setResults(fetchedResults);
 
-      // 2) Try to fetch authoritative per-question votes
-      const mv = await fetch(`/voting/myvotes?month=${effectiveMonth}`, {
+      // 2) Fetch my saved votes from backend
+      const mv = await fetch(`/votes/my?month=${effectiveMonth}`, {
         credentials: "include",
       });
+      const mvJson = await mv.json().catch(() => null);
 
-      let votes: Record<string, number[]> = {};
-
-      if (mv.ok) {
-        const json = await mv.json().catch(() => null);
-
-        // Expected shape: { achievements: [2,3], impact: [1,4], ... }
-        if (json && typeof json === "object" && !Array.isArray(json)) {
-          votes = json;
-        }
+      let backendVotes: MyVotesMap = {};
+      if (mvJson?.votes && typeof mvJson.votes === "object") {
+        backendVotes = mvJson.votes as MyVotesMap;
       }
 
-      // 3) Fallback to localStorage draft if server returns nothing
-      if (Object.keys(votes).length === 0) {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            if (parsed?.month === effectiveMonth && parsed?.votes) {
-              votes = parsed.votes;
-            }
-          } catch {}
+      // 3) Load draft votes from localStorage and merge
+      const draftRaw = localStorage.getItem(STORAGE_KEY);
+      if (draftRaw) {
+        const parsed = JSON.parse(draftRaw);
+        if (parsed?.month === effectiveMonth && parsed?.votes) {
+          const draftVotes = parsed.votes as MyVotesMap;
+          setMyVotes({
+            ...backendVotes,
+            ...draftVotes,
+          });
+        } else {
+          setMyVotes(backendVotes);
         }
+      } else {
+        setMyVotes(backendVotes);
       }
-
-      setMyVotes(votes);
-    } catch (e: any) {
-      console.error("VotingSummary load error:", e);
-      setError("Failed to load voting summary.");
+    } catch (err) {
+      console.error("Error loading voting summary:", err);
+      setError("Failed to load voting summary");
     } finally {
       setLoading(false);
     }
-  }, [effectiveMonth]);
+  };
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [effectiveMonth]);
+
+  const hasVotedFor = (employeeId: number): boolean => {
+    for (const key of Object.keys(myVotes)) {
+      if (myVotes[key]?.includes(employeeId)) return true;
+    }
+    return false;
+  };
 
   if (loading) {
-    return <div className="p-6 text-center text-slate-700">Loading summary…</div>;
+    return <div className="p-4">Loading voting summary…</div>;
   }
 
   if (error) {
-    return (
-      <div className="p-6 max-w-3xl mx-auto">
-        <div className="p-4 bg-red-50 border border-red-200 text-red-800 rounded">
-          <strong>Error:</strong> {error}
-        </div>
-        <button
-          onClick={() => load()}
-          className="mt-4 px-4 py-2 bg-brandnavy text-white rounded"
-        >
-          Retry
-        </button>
-      </div>
-    );
+    return <div className="p-4 text-red-600">{error}</div>;
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <header className="flex items-start justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Review Your Votes</h2>
-          <p className="text-sm text-slate-600 mt-1">
-            Month: <strong>{effectiveMonth}</strong>
-          </p>
-        </div>
+    <div className="p-4">
+      <h1 className="text-xl font-bold mb-4">Voting Summary</h1>
 
-        <button
-          onClick={() => load()}
-          className="px-3 py-2 bg-slate-100 rounded text-sm"
-        >
-          Refresh
-        </button>
-      </header>
+      <p className="mb-4">
+        Month: <strong>{effectiveMonth}</strong>
+      </p>
 
-      {results.map((q) => {
-        const selectedIds = myVotes[q.question_key] ?? [];
+      {results.length === 0 && (
+        <p className="text-gray-600">No votes recorded for this month yet.</p>
+      )}
 
-        return (
-          <section key={q.question_key} className="p-4 border rounded bg-white">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-medium">{q.question_label}</h3>
-              <button
-                onClick={() => navigate("/app/vote")}
-                className="text-sm text-slate-600"
-              >
-                Edit
-              </button>
-            </div>
+      {results.length > 0 && (
+        <table className="min-w-full border border-gray-300 text-sm">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="px-3 py-2 text-left border-b">Nominee</th>
+              <th className="px-3 py-2 text-left border-b">Total votes</th>
+              <th className="px-3 py-2 text-left border-b">My vote</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((row) => {
+              const mine = hasVotedFor(row.employee_id);
+              return (
+                <tr
+                  key={row.employee_id}
+                  className={mine ? "bg-green-50" : "bg-white"}
+                >
+                  <td className="px-3 py-2 border-b">
+                    {row.employee_name}
+                  </td>
+                  <td className="px-3 py-2 border-b">
+                    {row.total_votes}
+                  </td>
+                  <td className="px-3 py-2 border-b">
+                    {mine ? (
+                      <span className="text-green-700 font-semibold">
+                        Yes
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">No</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
 
-            <div className="mt-3 space-y-2">
-              {q.nominees.map((n) => {
-                const id = n.nominee_id;
-                const isMine = selectedIds.includes(id);
-
-                return (
-                  <div
-                    key={id}
-                    className={`p-3 rounded border flex justify-between ${
-                      isMine
-                        ? "bg-green-50 border-green-200"
-                        : "bg-white border-slate-200"
-                    }`}
-                  >
-                    <div>
-                      <div className="font-semibold">{n.nominee_name}</div>
-                      {n.answer && (
-                        <div className="text-sm text-slate-600 mt-1">{n.answer}</div>
-                      )}
-                    </div>
-
-                    <div className="text-right">
-                      {isMine && (
-                        <div className="text-xs text-green-700 font-medium">
-                          Your vote
-                        </div>
-                      )}
-                      <div className="text-xs text-slate-500">
-                        {n.vote_count ?? "-"} votes
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        );
-      })}
-
-      <div className="flex justify-end">
-        <button
-          onClick={() => navigate("/app/vote/finalize")}
-          className="px-4 py-2 bg-red-600 text-white rounded"
-        >
-          Final Submit
-        </button>
-      </div>
+      <button
+        onClick={() => navigate("/voting")}
+        className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+      >
+        Back to Voting
+      </button>
     </div>
   );
 }

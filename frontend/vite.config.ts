@@ -2,68 +2,78 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import fs from "fs";
 
 export default defineConfig({
   plugins: [react()],
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
   },
+
   server: {
-    // Allow overriding port via environment, default to 5175
+    // Keep your dynamic port logic
     port: Number(process.env.PORT ?? 5175),
 
-    // Expose on local network (useful for testing on devices)
+    // Expose on local network (unchanged)
     host: true,
 
-    // Proxy backend routes to Express on port 3000
+    // ⭐ Enable HTTPS using mkcert certificates
+    https: {
+      key: fs.readFileSync(path.join(__dirname, "certs", "localhost-key.pem")),
+      cert: fs.readFileSync(path.join(__dirname, "certs", "localhost.pem")),
+    },
+
+    // ⭐ Disable Vite’s own CORS — backend handles it
+    cors: false,
+
+    // ⭐ Proxy backend routes to your HTTPS backend
     proxy: {
       "/auth": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
         ws: true,
       },
       "/employees": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/reflections": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/votes": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/results": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/results-final": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/admin": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
       "/adjudication": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },
-
-      // Proxy voting endpoints (important: your frontend calls /voting/...)
       "/voting": {
-        target: "http://localhost:3000",
+        target: "https://localhost:3000",
         changeOrigin: true,
         secure: false,
       },

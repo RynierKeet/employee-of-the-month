@@ -2,25 +2,23 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import db from "../db";
 
+import {
+  getCurrentUser,
+  setCurrentUser,
+  clearCurrentUser,
+  setOverrideRole,
+  CurrentUser,
+} from "../utils/auth";
+
 const router = Router();
 
 /* -----------------------------------------
-   Helper: Normalize role
+   Helper: Normalize role from DB flags
 ----------------------------------------- */
 function deriveRole(row: any): "Admin" | "Adjudicator" | "Employee" {
+  if (row.is_adjudicator) return "Adjudicator"; // 👈 prefer adjudicator if both
   if (row.is_admin) return "Admin";
-  if (row.is_adjudicator) return "Adjudicator";
   return "Employee";
-}
-
-/* -----------------------------------------
-   Utility: minimal session user shape
------------------------------------------ */
-export interface SessionUser {
-  id: number;
-  name?: string;
-  email: string;
-  role: "Admin" | "Adjudicator" | "Employee";
 }
 
 /* -----------------------------------------
@@ -29,7 +27,7 @@ export interface SessionUser {
 router.get("/me", (req: Request, res: Response) => {
   try {
     const session = req.session as any;
-    const user: SessionUser | undefined = session?.user;
+    const user = session?.user;
 
     if (!user) {
       return res.status(401).json({ error: "Not authenticated" });
@@ -55,15 +53,18 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const normalizedEmail = (String(email) || "").trim().toLowerCase();
 
+    // ⭐ FIXED: removed is_employee (column does not exist)
     const query = `
-      SELECT id, name, email, password_hash, is_admin, is_adjudicator, must_change_password
+      SELECT id, name, email, password_hash,
+             is_admin, is_adjudicator,
+             must_change_password
       FROM employees
       WHERE LOWER(TRIM(email)) = ?
       LIMIT 1
     `;
+
     const raw = await db.pool.query(query, [normalizedEmail]);
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
-
     if (!rows || rows.length === 0) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
@@ -79,21 +80,32 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    const role = deriveRole(userRow);
+    const baseRole = deriveRole(userRow);
 
     const session = req.session as any;
     if (!session) {
       return res.status(500).json({ error: "Session not initialized" });
     }
 
-    const sessionUser: SessionUser = {
+    const sessionUser: CurrentUser = {
       id: userRow.id,
       name: userRow.name || undefined,
       email: userRow.email,
-      role,
+      role: baseRole,
     };
 
-    session.user = sessionUser;
+    // Store minimal user in session
+    setCurrentUser(req, sessionUser);
+
+    // Build available roles based on DB flags
+    const availableRoles: Array<"Admin" | "Adjudicator" | "Employee"> = [];
+    if (userRow.is_admin) {
+      availableRoles.push("Admin", "Adjudicator", "Employee");
+    } else if (userRow.is_adjudicator) {
+      availableRoles.push("Adjudicator", "Employee");
+    } else {
+      availableRoles.push("Employee");
+    }
 
     session.save((err: any) => {
       if (err) {
@@ -102,12 +114,20 @@ router.post("/login", async (req: Request, res: Response) => {
       }
 
       if (userRow.must_change_password) {
-        return res.json({ success: true, mustChangePassword: true, user: sessionUser });
+        return res.json({
+          success: true,
+          mustChangePassword: true,
+          user: sessionUser,
+          availableRoles,
+        });
       }
 
-      return res.json({ success: true, user: sessionUser });
+      return res.json({
+        success: true,
+        user: sessionUser,
+        availableRoles,
+      });
     });
-
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Login failed" });
@@ -116,12 +136,11 @@ router.post("/login", async (req: Request, res: Response) => {
 
 /* -----------------------------------------
    POST /auth/change-password
-   Updated to allow first-time password change
 ----------------------------------------- */
 router.post("/change-password", async (req: Request, res: Response) => {
   try {
     const session = req.session as any;
-    const sessionUser: SessionUser | undefined = session?.user;
+    const sessionUser = session?.user;
 
     if (!sessionUser) {
       return res.status(401).json({ error: "Not authenticated" });
@@ -129,7 +148,6 @@ router.post("/change-password", async (req: Request, res: Response) => {
 
     const { currentPassword, newPassword, confirmPassword } = req.body ?? {};
 
-    // Validate new password fields first
     if (!newPassword || !confirmPassword) {
       return res.status(400).json({ error: "All password fields are required" });
     }
@@ -142,7 +160,6 @@ router.post("/change-password", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "New password must be at least 8 characters" });
     }
 
-    // Fetch user row
     const q = `SELECT password_hash, must_change_password FROM employees WHERE id = ? LIMIT 1`;
     const raw = await db.pool.query(q, [sessionUser.id]);
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
@@ -153,7 +170,6 @@ router.post("/change-password", async (req: Request, res: Response) => {
 
     const userRow = rows[0];
 
-    // If NOT first-time password change, require currentPassword
     if (userRow.must_change_password !== 1) {
       if (!currentPassword) {
         return res.status(400).json({ error: "Current password is required" });
@@ -165,21 +181,52 @@ router.post("/change-password", async (req: Request, res: Response) => {
       }
     }
 
-    // Hash new password
     const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
     const newHash = await bcrypt.hash(String(newPassword), saltRounds);
 
-    // Update DB
     await db.pool.query(
       `UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?`,
       [newHash, sessionUser.id]
     );
 
     return res.json({ success: true });
-
   } catch (err) {
     console.error("Change password error:", err);
     return res.status(500).json({ error: "Failed to change password" });
+  }
+});
+
+/* -----------------------------------------
+   POST /auth/select-role
+----------------------------------------- */
+router.post("/select-role", async (req: Request, res: Response) => {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+    const requestedRole = String(req.body?.role || "").trim() as CurrentUser["role"];
+
+    // Determine allowed roles based on DB-derived role
+    const allowedRoles: CurrentUser["role"][] = [];
+
+    if (user.role === "Admin") {
+      allowedRoles.push("Admin", "Adjudicator", "Employee");
+    } else if (user.role === "Adjudicator") {
+      allowedRoles.push("Adjudicator", "Employee");
+    } else {
+      allowedRoles.push("Employee");
+    }
+
+    if (!allowedRoles.includes(requestedRole)) {
+      return res.status(403).json({ error: "Role not permitted for this user" });
+    }
+
+    setOverrideRole(req, requestedRole);
+
+    return res.json({ success: true, role: requestedRole });
+  } catch (err) {
+    console.error("POST /auth/select-role error:", err);
+    return res.status(500).json({ error: "Failed to select role" });
   }
 });
 

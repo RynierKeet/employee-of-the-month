@@ -23,6 +23,8 @@ export default function Layout() {
     }
   }
 
+  // IMPORTANT:
+  // me.role is now the EFFECTIVE role (Admin / Adjudicator / Employee)
   const isAdjudicator = hasRole(me, "Adjudicator");
   const isEmployee = hasRole(me, "Employee");
   const isAdmin = hasRole(me, "Admin");
@@ -88,7 +90,7 @@ export default function Layout() {
                   <NavLink
                     to="/app/adjudication"
                     label="Adjudication"
-                    active={location.pathname.startsWith("/adjudication")}
+                    active={location.pathname.startsWith("/app/adjudication")}
                   />
                 )}
 
@@ -113,7 +115,11 @@ export default function Layout() {
               <div className="flex items-center gap-4">
                 <div className="text-right leading-tight">
                   <div className="font-semibold text-crgGold">{me.name}</div>
-                  <div className="text-xs text-slate-200">{me.role}</div>
+
+                  {/* EFFECTIVE ROLE DISPLAY */}
+                  <div className="text-xs text-slate-200">
+                    {me.role}
+                  </div>
                 </div>
 
                 <button
