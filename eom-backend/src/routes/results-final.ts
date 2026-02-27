@@ -24,6 +24,16 @@ const QUESTION_LABELS: Record<QuestionKey, string> = {
   nomination: "Nomination Justification",
 };
 
+// Map each question key to the correct DB column
+const REFLECTION_COLUMN: Record<QuestionKey, string> = {
+  achievements: "achievements_text",
+  impact: "impact_text",
+  values: "values_text",
+  growth: "growth_text",
+  beyond: "beyond_text",
+  nomination: "nomination_text",
+};
+
 function normalizeMonthKey(raw: string): string {
   if (!raw) return "";
   return raw.trim().slice(0, 7);
@@ -31,9 +41,6 @@ function normalizeMonthKey(raw: string): string {
 
 /* -----------------------------------------------------
    GET /results-final?month=YYYY-MM
-   Final locked results + winners
-   - Adjudicators always see results
-   - Employees see results only after publish
 ----------------------------------------------------- */
 router.get("/", async (req, res) => {
   const user = await getCurrentUser(req);
@@ -59,7 +66,6 @@ router.get("/", async (req, res) => {
 
     const isPublished = publishRow?.published === 1;
 
-    // Employees cannot see results until published
     if (identity === "Employee" && !isPublished) {
       return res.json({ published: false });
     }
@@ -69,9 +75,10 @@ router.get("/", async (req, res) => {
     ----------------------------------------------------- */
     const results = [];
     const winners = [];
+    const totalVoteMap = new Map<number, number>();
 
     for (const qKey of QUESTION_KEYS) {
-      // Load nominees
+      // Load nominees (final reflections only)
       const nominees = await db.all(
         `
         SELECT e.id AS nominee_id,
@@ -102,13 +109,43 @@ router.get("/", async (req, res) => {
       const voteMap = new Map<number, number>();
       voteCounts.forEach((v) => voteMap.set(v.nominee_id, v.votes));
 
-      const enriched = nominees.map((n) => ({
-        nominee_id: n.nominee_id,
-        nominee_name: n.nominee_name,
-        vote_count: voteMap.get(n.nominee_id) || 0,
-      }));
+      /* -----------------------------------------------------
+         2a) Load reflection text + photo for each nominee
+      ----------------------------------------------------- */
+      const enriched = [];
+      const col = REFLECTION_COLUMN[qKey];
 
-      // Determine winner(s)
+      for (const n of nominees) {
+        const reflectionRow = await db.get(
+          `
+          SELECT ${col} AS reflection_text
+          FROM reflections
+          WHERE employee_id = ?
+            AND month_key = ?
+            AND is_final = 1
+          `,
+          [n.nominee_id, month_key]
+        );
+
+        const vote_count = voteMap.get(n.nominee_id) || 0;
+
+        totalVoteMap.set(
+          n.nominee_id,
+          (totalVoteMap.get(n.nominee_id) || 0) + vote_count
+        );
+
+        enriched.push({
+          nominee_id: n.nominee_id,
+          nominee_name: n.nominee_name,
+          vote_count,
+          reflection_text: reflectionRow?.reflection_text || "",
+          photo_url: `/photos/${n.nominee_id}.jpg`,
+        });
+      }
+
+      /* -----------------------------------------------------
+         2b) Determine winner(s)
+      ----------------------------------------------------- */
       const maxVotes = Math.max(...enriched.map((n) => n.vote_count));
       const qWinners = enriched.filter((n) => n.vote_count === maxVotes);
 
@@ -127,13 +164,36 @@ router.get("/", async (req, res) => {
     }
 
     /* -----------------------------------------------------
-       3) Return final results
+       3) Determine overall Employee of the Month
+    ----------------------------------------------------- */
+    let overallWinner = null;
+
+    if (totalVoteMap.size > 0) {
+      const sorted = [...totalVoteMap.entries()].sort((a, b) => b[1] - a[1]);
+      const [topNomineeId, topVotes] = sorted[0];
+
+      const winnerRow = await db.get(
+        "SELECT id, name FROM employees WHERE id = ?",
+        [topNomineeId]
+      );
+
+      overallWinner = {
+        nominee_id: winnerRow.id,
+        nominee_name: winnerRow.name,
+        total_votes: topVotes,
+        photo_url: `/photos/${winnerRow.id}.jpg`,
+      };
+    }
+
+    /* -----------------------------------------------------
+       4) Return final results
     ----------------------------------------------------- */
     return res.json({
       published: isPublished,
       month_key,
       results,
       winners,
+      overall_winner: overallWinner,
       visibleScope: identity === "Adjudicator" ? "adjudicator" : "public",
     });
   } catch (err) {

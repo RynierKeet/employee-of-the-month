@@ -6,21 +6,22 @@ const router = Router();
 
 /* -----------------------------------------
    GET /employees
-   (Assuming your original GET handler exists above)
+   Returns all employees (id, name, email, role)
 ----------------------------------------- */
-// Keep your existing GET handler here.
-// Example:
-// router.get("/", async (req, res) => {
-//   const rows = await db.all("SELECT id, name, email, role FROM employees");
-//   res.json(rows);
-// });
+router.get("/", async (req, res) => {
+  try {
+    const rows = await db.all(
+      "SELECT id, name, email, role FROM employees ORDER BY name ASC"
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("GET /employees error:", err);
+    return res.status(500).json({ error: "server error" });
+  }
+});
 
 /* -----------------------------------------
    POST /employees  (Admin-only)
-   - Creates a new employee
-   - Normalizes email
-   - Ensures no duplicates
-   - Returns the created employee
 ----------------------------------------- */
 router.post("/", async (req, res) => {
   try {
@@ -38,13 +39,11 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "name or email required" });
     }
 
-    // Normalize email for consistency
     const normalizedEmail =
       typeof email === "string" ? email.trim().toLowerCase() : null;
 
     console.log(">>> POST /employees body:", req.body);
 
-    // Check for existing employee by normalized email
     if (normalizedEmail) {
       const existing = await db.get(
         "SELECT id FROM employees WHERE LOWER(TRIM(email)) = ?",
@@ -53,14 +52,9 @@ router.post("/", async (req, res) => {
       if (existing) return res.status(409).json({ error: "exists" });
     }
 
-    // Insert employee
     const result = await db.run(
       "INSERT INTO employees (name, email, role, created_at) VALUES (?, ?, ?, datetime('now'))",
-      [
-        name || null,
-        normalizedEmail || null,
-        role || "Employee" // Ensure correct casing
-      ]
+      [name || null, normalizedEmail || null, role || "Employee"]
     );
 
     const id = result.lastID;
@@ -71,7 +65,6 @@ router.post("/", async (req, res) => {
     );
 
     return res.status(201).json(created);
-
   } catch (err) {
     console.error("POST /employees error:", err);
     return res.status(500).json({ error: "server error" });

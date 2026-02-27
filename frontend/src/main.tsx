@@ -4,18 +4,18 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.tsx";
 import { AuthProvider } from "./auth.tsx";
-import { StepProvider } from "./context/StepContext";   // ⭐ NEW
+import { StepProvider } from "./context/StepContext";
 import "./index.css";
 
 const rootEl = document.getElementById("root")!;
 createRoot(rootEl).render(
   <React.StrictMode>
     <AuthProvider>
-      <StepProvider>               {/* ⭐ WRAP EVERYTHING IN STEP CONTEXT */}
-        <BrowserRouter>
+      <BrowserRouter>
+        <StepProvider>
           <App />
-        </BrowserRouter>
-      </StepProvider>
+        </StepProvider>
+      </BrowserRouter>
     </AuthProvider>
   </React.StrictMode>
 );

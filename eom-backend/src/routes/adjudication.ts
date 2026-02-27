@@ -179,15 +179,15 @@ router.get("/panel", async (req, res) => {
        6. Final winner (if already stored)
     ----------------------------------------------------- */
     const finalWinner = await db.get(
-      `
-      SELECT rf.employee_id, e.name AS employee_name
-      FROM results_final rf
-      JOIN employees e ON e.id = rf.employee_id
-      WHERE rf.month_key = ?
-      LIMIT 1
-      `,
-      [month_key]
-    );
+  `
+  SELECT w.employee_id, e.name AS employee_name
+   FROM winners w
+    JOIN employees e ON e.id = w.employee_id
+    WHERE w.month_key = ?
+    LIMIT 1
+    `,
+    [month_key]
+);
 
     return res.json({
       month_key,
@@ -742,6 +742,7 @@ router.get("/round-history", async (req, res) => {
 
 /* -----------------------------------------------------
    POST /adjudication/finalise-winner
+   (Legacy endpoint, now updated to use winners table)
 ----------------------------------------------------- */
 router.post("/finalise-winner", async (req, res) => {
   try {
@@ -757,14 +758,7 @@ router.post("/finalise-winner", async (req, res) => {
       return res.status(400).json({ error: "Missing month_key" });
     }
 
-    const existing = await db.get(
-      `SELECT 1 FROM results_final WHERE month_key = ?`,
-      [month_key]
-    );
-    if (existing) {
-      return res.status(409).json({ error: "Winner already finalised" });
-    }
-
+    // Determine current adjudication round
     const row = await db.get(
       `
       SELECT MAX(round_number) AS round_number
@@ -780,6 +774,7 @@ router.post("/finalise-winner", async (req, res) => {
         .json({ error: "No adjudication round found for this month" });
     }
 
+    // Load candidates for the current round
     const candidates = await db.all(
       `
       SELECT candidate_id AS employee_id, votes
@@ -796,6 +791,7 @@ router.post("/finalise-winner", async (req, res) => {
         .json({ error: "No candidates in current adjudication round" });
     }
 
+    // Determine winner
     const maxVotes = Math.max(...candidates.map((c: any) => c.votes));
     const top = candidates.filter((c: any) => c.votes === maxVotes);
 
@@ -807,12 +803,14 @@ router.post("/finalise-winner", async (req, res) => {
 
     const winnerId = top[0].employee_id;
 
+    // NEW: Write to winners table (idempotent)
     await db.run(
       `
-      INSERT INTO results_final (employee_id, month_key)
+      INSERT INTO winners (month_key, employee_id)
       VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE employee_id = VALUES(employee_id)
       `,
-      [winnerId, month_key]
+      [month_key, winnerId]
     );
 
     return res.json({ success: true, winner: winnerId });

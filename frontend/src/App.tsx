@@ -17,6 +17,7 @@ import Vote from "./pages/Vote";
 import CeremonyPage from "./pages/CeremonyPage";
 
 export default function App() {
+  console.log("App.tsx ROUTES LOADED");
   const { me, loading } = useAuth();
 
   if (loading) {

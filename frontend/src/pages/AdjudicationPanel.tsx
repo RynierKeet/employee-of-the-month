@@ -100,7 +100,11 @@ function Accordion({
         <span className="text-xs font-semibold text-slate-800 uppercase tracking-wide">
           {title}
         </span>
-        <span className={`transition-transform ${open ? "rotate-90 text-crgGold" : "text-slate-500"}`}>
+        <span
+          className={`transition-transform ${
+            open ? "rotate-90 text-crgGold" : "text-slate-500"
+          }`}
+        >
           ▶
         </span>
       </button>
@@ -118,7 +122,9 @@ const POLL_INTERVAL_MS = 4000;
 export default function AdjudicationPanel() {
   const [month, setMonth] = useState("2026-02");
   const [panel, setPanel] = useState<PanelPayload | null>(null);
-  const [roundHistory, setRoundHistory] = useState<RoundHistoryPayload | null>(null);
+  const [roundHistory, setRoundHistory] = useState<RoundHistoryPayload | null>(
+    null
+  );
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [guidelinesOpen, setGuidelinesOpen] = useState(false);
@@ -127,14 +133,17 @@ export default function AdjudicationPanel() {
   const [isVoting, setIsVoting] = useState(false);
   const [voteSaved, setVoteSaved] = useState(false);
 
+  // Permanent success banner when winner is committed
+  const [commitSuccess, setCommitSuccess] = useState(false);
+
   const pollRef = useRef<number | null>(null);
 
   const fetchPanel = useCallback(async () => {
     try {
       const res = await fetch(
-      `/adjudication/panel?month=${encodeURIComponent(month)}`,
-      { credentials: "include" }
-);
+        `/adjudication/panel?month=${encodeURIComponent(month)}`,
+        { credentials: "include" }
+      );
       const data = await res.json();
       if (!res.ok) {
         setMessage(data?.error || "Failed to load adjudication panel.");
@@ -152,9 +161,9 @@ export default function AdjudicationPanel() {
   const fetchRoundHistory = useCallback(async () => {
     try {
       const res = await fetch(
-  `/adjudication/round-history?month=${encodeURIComponent(month)}`,
-  { credentials: "include" }
-);
+        `/adjudication/round-history?month=${encodeURIComponent(month)}`,
+        { credentials: "include" }
+      );
       const data = await res.json();
       if (!res.ok) {
         setRoundHistory(null);
@@ -167,6 +176,9 @@ export default function AdjudicationPanel() {
   }, [month]);
 
   useEffect(() => {
+    // reset banner when month changes
+    setCommitSuccess(false);
+
     // initial load
     fetchPanel();
     fetchRoundHistory();
@@ -185,6 +197,13 @@ export default function AdjudicationPanel() {
     };
   }, [fetchPanel, fetchRoundHistory]);
 
+  // When finalWinner appears, show the success banner (permanent for this month)
+  useEffect(() => {
+    if (panel?.finalWinner) {
+      setCommitSuccess(true);
+    }
+  }, [panel]);
+
   /* -----------------------------------------------------
      START ROUND (POST)
   ----------------------------------------------------- */
@@ -193,12 +212,12 @@ export default function AdjudicationPanel() {
     setMessage("");
 
     try {
-     const res = await fetch("/adjudication/start-round", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ month_key: month }),
-});
+      const res = await fetch("/adjudication/start-round", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ month_key: month }),
+      });
 
       const data = await res.json();
       if (!res.ok) {
@@ -218,7 +237,6 @@ export default function AdjudicationPanel() {
 
   /* -----------------------------------------------------
      CAST ROUND VOTE (POST)
-     Handles server responses including tie/winner and refreshes state.
   ----------------------------------------------------- */
   async function castRoundVote(candidateId: number) {
     setIsVoting(true);
@@ -226,28 +244,25 @@ export default function AdjudicationPanel() {
     setVoteSaved(false);
 
     try {
-     const res = await fetch("/adjudication/round-vote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-      month_key: month,
-      candidate_id: candidateId,
-  }),
-});
+      const res = await fetch("/adjudication/round-vote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          month_key: month,
+          candidate_id: candidateId,
+        }),
+      });
 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        // common error handling
         if (res.status === 401) {
           setMessage(data?.error || "Not logged in. Please sign in.");
           return;
         }
         if (res.status === 409) {
-          // already voted
           setMessage(data?.error || "You already voted in this round.");
-          // refresh to show current state
           await fetchPanel();
           await fetchRoundHistory();
           return;
@@ -264,51 +279,44 @@ export default function AdjudicationPanel() {
       if (data.roundComplete === false) {
         await fetchPanel();
         await fetchRoundHistory();
-        setTimeout(() => setVoteSaved(false), 3000);
         return;
       }
 
       // If round completed and a tie was returned
       if (data.roundComplete === true && data.tie) {
-        // If backend created next round rows, fetch panel to pick them up
         await fetchPanel();
         await fetchRoundHistory();
 
-// If backend returned tie but did not create rows, attempt to create next round
-const hasNextRound =
-  panel?.currentRound != null &&
-  typeof data.nextRound === "number" &&
-  data.nextRound > panel.currentRound;
+        const hasNextRound =
+          panel?.currentRound != null &&
+          typeof data.nextRound === "number" &&
+          data.nextRound > panel.currentRound;
 
-if (!hasNextRound) {
-  // attempt to create next round explicitly (idempotent on server)
-  await fetch("/adjudication/start-round", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ month_key: month }),
-  }).catch(() => null);
+        if (!hasNextRound) {
+          await fetch("/adjudication/start-round", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ month_key: month }),
+          }).catch(() => null);
 
-  await fetchPanel();
-  await fetchRoundHistory();
-}
+          await fetchPanel();
+          await fetchRoundHistory();
+        }
 
-setTimeout(() => setVoteSaved(false), 3000);
-return;
+        return;
       }
 
       // If round completed and a winner was finalised
       if (data.roundComplete === true && data.winner) {
         await fetchPanel();
         await fetchRoundHistory();
-        setTimeout(() => setVoteSaved(false), 3000);
         return;
       }
 
       // Default: refresh panel and history
       await fetchPanel();
       await fetchRoundHistory();
-      setTimeout(() => setVoteSaved(false), 3000);
     } catch {
       setMessage("Server error while casting vote.");
     } finally {
@@ -325,11 +333,11 @@ return;
 
     try {
       const res = await fetch("/adjudication/finalise-winner", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  credentials: "include",
-  body: JSON.stringify({ month_key: month }),
-});
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ month_key: month }),
+      });
 
       const data = await res.json();
       if (!res.ok) {
@@ -358,19 +366,46 @@ return;
     );
   }
 
-  const { candidates, tiedCandidates, currentRound, roundCandidates, roundWinner, finalWinner } = panel;
+  const {
+    candidates,
+    tiedCandidates,
+    currentRound,
+    roundCandidates,
+    roundWinner,
+    finalWinner,
+  } = panel;
 
   return (
     <div className="bg-white shadow-card border border-slate-200 rounded-card p-8 space-y-8">
+      {/* Permanent success banner for committed winner */}
+      {commitSuccess && (
+        <div className="p-3 border border-green-600 bg-green-50 rounded-card text-sm font-medium text-green-800">
+          ✓ Winner committed successfully!
+        </div>
+      )}
+
+      {/* Vote Saved Banner */}
+      {voteSaved && (
+        <div className="p-3 border border-emerald-600 bg-emerald-50 rounded-card text-sm font-medium text-emerald-800">
+          ✓ Your vote has been recorded.
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Adjudication Panel</h2>
-          <p className="text-sm text-slate-700 mt-1">Review candidates, reflections, and manage adjudication rounds.</p>
+          <h2 className="text-2xl font-semibold text-slate-900">
+            Adjudication Panel
+          </h2>
+          <p className="text-sm text-slate-700 mt-1">
+            Review candidates, reflections, and manage adjudication rounds.
+          </p>
         </div>
 
         <div className="space-y-1">
-          <label className="block text-xs font-medium text-slate-700 uppercase tracking-wide">Month</label>
+          <label className="block text-xs font-medium text-slate-700 uppercase tracking-wide">
+            Month
+          </label>
           <input
             type="month"
             value={month}
@@ -380,20 +415,20 @@ return;
         </div>
       </div>
 
-      {/* Vote Saved Banner */}
-      {voteSaved && (
-        <div className="p-3 border border-emerald-600 bg-emerald-50 rounded-card text-sm font-medium text-emerald-800">
-          ✓ Your vote has been recorded.
-        </div>
-      )}
-
       {/* Tie banner (initial tie before any adjudication round) */}
       {tiedCandidates.length > 1 && !currentRound && !finalWinner && (
         <div className="p-4 border border-crgGold bg-[#fdf8ea] rounded-card space-y-1">
           <p className="font-medium text-slate-900">Tie detected</p>
-          <p className="text-sm text-slate-700">The following employees are tied for Employee of the Month:</p>
+          <p className="text-sm text-slate-700">
+            The following employees are tied for Employee of the Month:
+          </p>
           <p className="text-sm text-slate-900 font-medium">
-            {tiedCandidates.map((id) => candidates.find((c) => c.employee_id === id)?.name).join(", ")}
+            {tiedCandidates
+              .map(
+                (id) =>
+                  candidates.find((c) => c.employee_id === id)?.name
+              )
+              .join(", ")}
           </p>
 
           <div>
@@ -402,7 +437,11 @@ return;
               disabled={loading}
               className="mt-3 px-4 py-2 rounded-card font-medium text-white bg-brandnavy hover:bg-slate-800 hover:text-crgGold transition disabled:opacity-50"
             >
-              {currentRound === null && !!roundHistory && roundHistory.rounds.length > 0 ? "Start Next Round" : "Start Adjudication Round"}
+              {currentRound === null &&
+              !!roundHistory &&
+              roundHistory.rounds.length > 0
+                ? "Start Next Round"
+                : "Start Adjudication Round"}
             </button>
           </div>
         </div>
@@ -411,15 +450,26 @@ return;
       {/* Current Round */}
       {currentRound && !finalWinner && (
         <div className="border border-crgGold bg-[#fff9e8] rounded-card p-6 space-y-4">
-          <p className="text-sm font-semibold text-slate-900">Adjudication Round {currentRound}</p>
+          <p className="text-sm font-semibold text-slate-900">
+            Adjudication Round {currentRound}
+          </p>
 
           {/* Tie banner for active round (if tiedCandidates present) */}
           {panel.tiedCandidates && panel.tiedCandidates.length > 1 && (
             <div className="p-3 border border-crgGold bg-[#fff9e8] rounded-card">
-              <p className="text-sm font-medium text-slate-900">Tie detected in this round</p>
+              <p className="text-sm font-medium text-slate-900">
+                Tie detected in this round
+              </p>
               <p className="text-xs text-slate-700">
                 Tied candidates:{" "}
-                {panel.tiedCandidates.map((id) => panel.candidates.find((c) => c.employee_id === id)?.name).join(", ")}
+                {panel.tiedCandidates
+                  .map(
+                    (id) =>
+                      panel.candidates.find(
+                        (c) => c.employee_id === id
+                      )?.name
+                  )
+                  .join(", ")}
               </p>
               <div className="mt-2">
                 <button
@@ -435,9 +485,16 @@ return;
 
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
             {roundCandidates.map((c) => (
-              <div key={c.employee_id} className="border border-slate-300 bg-white rounded-card p-4 space-y-3">
-                <p className="text-sm font-semibold text-slate-900">{c.employee_name}</p>
-                <p className="text-xs text-slate-600">Round votes: {c.votes}</p>
+              <div
+                key={c.employee_id}
+                className="border border-slate-300 bg-white rounded-card p-4 space-y-3"
+              >
+                <p className="text-sm font-semibold text-slate-900">
+                  {c.employee_name}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Round votes: {c.votes}
+                </p>
 
                 {!roundWinner && (
                   <button
@@ -454,9 +511,15 @@ return;
 
           {roundWinner && (
             <div className="p-4 border border-emerald-600 bg-emerald-50 rounded-card">
-              <p className="text-sm font-semibold text-emerald-800">Round Winner:</p>
+              <p className="text-sm font-semibold text-emerald-800">
+                Round Winner:
+              </p>
               <p className="text-sm text-emerald-900">
-                {roundCandidates.find((c) => c.employee_id === roundWinner)?.employee_name}
+                {
+                  roundCandidates.find(
+                    (c) => c.employee_id === roundWinner
+                  )?.employee_name
+                }
               </p>
 
               <button
@@ -474,8 +537,12 @@ return;
       {/* Final Winner */}
       {finalWinner && (
         <div className="p-5 border border-crgGold bg-[#fdf8ea] rounded-card space-y-3">
-          <p className="text-sm font-semibold text-slate-900">Final Winner</p>
-          <p className="text-sm text-slate-800">{finalWinner.employee_name}</p>
+          <p className="text-sm font-semibold text-slate-900">
+            Final Winner
+          </p>
+          <p className="text-sm text-slate-800">
+            {finalWinner.employee_name}
+          </p>
         </div>
       )}
 
@@ -488,21 +555,38 @@ return;
             return (
               <div
                 key={c.employee_id}
-                className={`border rounded-card p-5 space-y-4 ${isTied ? "border-crgGold bg-[#fdf8ea]" : "border-slate-200 bg-slate-50"}`}
+                className={`border rounded-card p-5 space-y-4 ${
+                  isTied
+                    ? "border-crgGold bg-[#fdf8ea]"
+                    : "border-slate-200 bg-slate-50"
+                }`}
               >
-                <p className="text-sm font-semibold text-slate-900">{c.name}</p>
-                <p className="text-xs text-slate-600">Employee votes: {c.votes}</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {c.name}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Employee votes: {c.votes}
+                </p>
 
                 <div className="space-y-2">
                   <div className="flex items-center">
-                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">Reflections</p>
+                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">
+                      Reflections
+                    </p>
                     <InfoIcon onClick={() => setGuidelinesOpen(true)} />
                   </div>
 
                   <div className="space-y-2 text-sm">
                     {Object.entries(c.reflections).map(([key, value]) => (
-                      <div key={key} className="bg-white border border-slate-200 rounded-card p-3">
-                        <p className="font-medium text-slate-900 capitalize">{key.replace("_text", "").replace("_", " ")}</p>
+                      <div
+                        key={key}
+                        className="bg-white border border-slate-200 rounded-card p-3"
+                      >
+                        <p className="font-medium text-slate-900 capitalize">
+                          {key
+                            .replace("_text", "")
+                            .replace("_", " ")}
+                        </p>
                         <p className="text-slate-700 mt-1">{value}</p>
                       </div>
                     ))}
@@ -517,35 +601,60 @@ return;
       {/* Round History */}
       {roundHistory && roundHistory.rounds.length > 0 && (
         <div className="border border-slate-200 rounded-card p-6 space-y-4">
-          <p className="text-sm font-semibold text-slate-900">Round History</p>
+          <p className="text-sm font-semibold text-slate-900">
+            Round History
+          </p>
 
           <div className="space-y-3">
             {roundHistory.rounds.map((round) => (
-              <Accordion key={round.round_number} title={`Round ${round.round_number}`} highlight defaultOpen={false}>
+              <Accordion
+                key={round.round_number}
+                title={`Round ${round.round_number}`}
+                highlight
+                defaultOpen={false}
+              >
                 <div className="space-y-3">
                   <div>
-                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">Candidates</p>
+                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">
+                      Candidates
+                    </p>
                     <ul className="mt-1 space-y-1 text-sm">
                       {round.candidates.map((c) => (
-                        <li key={c.employee_id} className="flex justify-between">
+                        <li
+                          key={c.employee_id}
+                          className="flex justify-between"
+                        >
                           <span>{c.employee_name}</span>
-                          <span className="text-slate-600">Votes: {c.votes}</span>
+                          <span className="text-slate-600">
+                            Votes: {c.votes}
+                          </span>
                         </li>
                       ))}
                     </ul>
                   </div>
 
                   <div>
-                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">Adjudicator Votes</p>
+                    <p className="text-xs font-semibold text-slate-800 uppercase tracking-wide">
+                      Adjudicator Votes
+                    </p>
                     {round.votes.length === 0 ? (
-                      <p className="text-xs text-slate-600 italic">No votes recorded in this round.</p>
+                      <p className="text-xs text-slate-600 italic">
+                        No votes recorded in this round.
+                      </p>
                     ) : (
                       <ul className="mt-1 space-y-1 text-xs text-slate-700">
                         {round.votes.map((v, idx) => (
                           <li key={idx}>
-                            <span className="font-medium">{v.adjudicator_name}</span> voted for{" "}
-                            <span className="font-medium">{v.employee_name}</span>{" "}
-                            <span className="text-slate-500">({new Date(v.created_at).toLocaleString()})</span>
+                            <span className="font-medium">
+                              {v.adjudicator_name}
+                            </span>{" "}
+                            voted for{" "}
+                            <span className="font-medium">
+                              {v.employee_name}
+                            </span>{" "}
+                            <span className="text-slate-500">
+                              ({new Date(v.created_at).toLocaleString()})
+                            </span>
                           </li>
                         ))}
                       </ul>
@@ -558,9 +667,15 @@ return;
         </div>
       )}
 
-      {message && <p className="text-sm font-medium text-slate-800">{message}</p>}
+      {message && (
+        <p className="text-sm font-medium text-slate-800">{message}</p>
+      )}
 
-      <Modal open={guidelinesOpen} onClose={() => setGuidelinesOpen(false)} title="Reflection Guidelines">
+      <Modal
+        open={guidelinesOpen}
+        onClose={() => setGuidelinesOpen(false)}
+        title="Reflection Guidelines"
+      >
         <ReflectionGuidelines />
       </Modal>
     </div>

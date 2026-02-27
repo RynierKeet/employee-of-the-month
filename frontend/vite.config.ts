@@ -14,22 +14,22 @@ export default defineConfig({
   },
 
   server: {
-    // Keep your dynamic port logic
+    // Dynamic port
     port: Number(process.env.PORT ?? 5175),
 
-    // Expose on local network (unchanged)
+    // Expose on local network
     host: true,
 
-    // ⭐ Enable HTTPS using mkcert certificates
+    // HTTPS using mkcert certificates
     https: {
       key: fs.readFileSync(path.join(__dirname, "certs", "localhost-key.pem")),
       cert: fs.readFileSync(path.join(__dirname, "certs", "localhost.pem")),
     },
 
-    // ⭐ Disable Vite’s own CORS — backend handles it
+    // Backend handles CORS
     cors: false,
 
-    // ⭐ Proxy backend routes to your HTTPS backend
+    // Proxy backend routes to HTTPS backend
     proxy: {
       "/auth": {
         target: "https://localhost:3000",

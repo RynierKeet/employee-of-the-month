@@ -14,7 +14,6 @@ export default function RequireAuth({ children }: Props) {
   const location = useLocation();
   const { me, loading } = useAuth();
 
-  // Still loading session
   if (loading) {
     return (
       <div style={{ padding: "2rem", textAlign: "center" }} aria-live="polite">
@@ -23,19 +22,14 @@ export default function RequireAuth({ children }: Props) {
     );
   }
 
-  // Not logged in
   if (!me) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Must change password
   if (me.must_change_password && location.pathname !== "/change-password") {
     return <Navigate to="/change-password" state={{ from: location }} replace />;
   }
 
-  // IMPORTANT:
-  // me.role is now the *effective* role (Admin / Adjudicator / Employee)
-  // because the backend applies overrideRole before returning /auth/me.
   const effectiveRole = me.role as Role;
 
   const isEmployee = effectiveRole === "Employee";
@@ -44,11 +38,15 @@ export default function RequireAuth({ children }: Props) {
 
   const path = location.pathname;
 
-  // -----------------------------
-  // ROLE‑BASED ROUTE PROTECTION
-  // -----------------------------
+  // ⭐ Allow adjudicators and admins to access ceremony
+  if (path.startsWith("/app/ceremony")) {
+    if (!isAdjudicator && !isAdmin) {
+      return <Navigate to="/app/submit-reflection" replace />;
+    }
+    return children ? <>{children}</> : <Outlet />;
+  }
 
-  // EMPLOYEE‑ONLY PAGES
+  // Employee-only pages
   if (
     path.startsWith("/app/submit-reflection") ||
     path.startsWith("/app/vote") ||
@@ -60,14 +58,12 @@ export default function RequireAuth({ children }: Props) {
     }
   }
 
-  // ADJUDICATOR‑ONLY PAGES
+  // Adjudicator-only pages
   if (path.startsWith("/app/adjudication")) {
     if (!isAdjudicator && !isAdmin) {
       return <Navigate to="/app/submit-reflection" replace />;
     }
   }
-
-  // Admin can go anywhere
 
   return children ? <>{children}</> : <Outlet />;
 }
