@@ -301,14 +301,40 @@ app.use(
    ENSURE UNIQUE INDEX ON REFLECTIONS
 ----------------------------------------------------- */
 async function ensureUniqueIndex() {
-  try {
-    await db.run(
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_reflections_employee_month ON reflections(employee_id, month_key)"
-    );
-    console.log("Ensured unique index on reflections(employee_id, month_key)");
-  } catch (err) {
-    console.warn("Could not create unique index for reflections:", err);
-  }
+    try {
+        // MySQL does not support `CREATE INDEX IF NOT EXISTS`.
+        // Check INFORMATION_SCHEMA and only create the index if missing.
+        const existing = await db.get(
+            `SELECT 1 AS exists_flag
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'reflections'
+         AND INDEX_NAME = 'idx_reflections_employee_month'
+       LIMIT 1`
+        );
+
+        if (!existing) {
+            await db.run(
+                "CREATE UNIQUE INDEX idx_reflections_employee_month ON `reflections`(`employee_id`, `month_key`)"
+            );
+            console.log(
+                "Created unique index idx_reflections_employee_month on reflections(employee_id, month_key)"
+            );
+        } else {
+            console.log(
+                "Unique index idx_reflections_employee_month already exists on reflections"
+            );
+        }
+    } catch (err: any) {
+        // In case of a race condition or if the index already exists under a different name,
+        // ignore the specific duplicate index errors; otherwise rethrow/log.
+        const msg = String(err?.message || "");
+        if (/Duplicate key name|already exists/i.test(msg)) {
+            console.warn("Index already exists, continuing.");
+            return;
+        }
+        console.warn("Could not create unique index for reflections:", err);
+    }
 }
 
 /* -----------------------------------------------------
