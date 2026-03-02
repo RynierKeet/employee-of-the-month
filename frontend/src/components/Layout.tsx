@@ -23,12 +23,24 @@ export default function Layout() {
     }
   }
 
-  // IMPORTANT:
-  // me.role is now the EFFECTIVE role (Admin / Adjudicator / Employee)
+  // EFFECTIVE role
   const isAdjudicator = hasRole(me, "Adjudicator");
   const isEmployee = hasRole(me, "Employee");
   const isAdmin = hasRole(me, "Admin");
 
+  // ⭐ NEW: Ceremony route detection
+  const isCeremony = location.pathname.startsWith("/app/ceremony");
+
+  // ⭐ NEW: Ceremony bypass — full-screen, no layout
+  if (isCeremony) {
+    return (
+      <div className="fixed inset-0 bg-black text-white overflow-hidden">
+        <Outlet />
+      </div>
+    );
+  }
+
+  // ⭐ Normal layout for all other pages
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-crg">
       {/* HEADER */}
@@ -117,9 +129,7 @@ export default function Layout() {
                   <div className="font-semibold text-crgGold">{me.name}</div>
 
                   {/* EFFECTIVE ROLE DISPLAY */}
-                  <div className="text-xs text-slate-200">
-                    {me.role}
-                  </div>
+                  <div className="text-xs text-slate-200">{me.role}</div>
                 </div>
 
                 <button
