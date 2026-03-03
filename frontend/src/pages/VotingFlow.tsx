@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import VotingQuestion from "./VotingQuestion";
+import VotingQuestion from "../components/VotingQuestion";
 
 const QUESTIONS = [
   { key: "achievements", label: "Key Achievements" },

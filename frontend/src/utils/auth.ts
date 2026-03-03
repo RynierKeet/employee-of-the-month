@@ -1,5 +1,7 @@
 // src/utils/auth.ts
 
+const API_BASE: string = (import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:3000";
+
 export interface AuthUser {
   id?: number;
   name?: string;
@@ -22,7 +24,7 @@ export interface AuthUser {
  */
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   try {
-    const res = await fetch("/auth/me", {
+    const res = await fetch(`${API_BASE}/auth/me`, {
       credentials: "include",
     });
 
@@ -73,7 +75,7 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
  */
 export async function logout(): Promise<void> {
   try {
-    await fetch("/auth/logout", {
+    await fetch(`${API_BASE}/auth/logout`, {
       method: "POST",
       credentials: "include",
     });

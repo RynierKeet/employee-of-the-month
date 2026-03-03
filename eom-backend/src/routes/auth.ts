@@ -55,7 +55,8 @@ router.post("/login", async (req: Request, res: Response) => {
 
     // ⭐ FIXED: removed is_employee (column does not exist)
     const query = `
-      SELECT id, name, email, password_hash,
+      SELECT id, name, email,
+             password_hash,
              is_admin, is_adjudicator,
              must_change_password
       FROM employees
@@ -66,18 +67,38 @@ router.post("/login", async (req: Request, res: Response) => {
     const raw = await db.pool.query(query, [normalizedEmail]);
     const rows = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : (raw as any[]);
     if (!rows || rows.length === 0) {
+      console.warn("/auth/login: user not found for email", normalizedEmail);
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     const userRow = rows[0];
 
-    if (!userRow.password_hash) {
-      return res.status(401).json({ error: "Invalid email or password" });
-    }
+    // Allow login via TEMP password when password_hash is NULL, otherwise verify bcrypt hash
+    const hash: string | null = userRow.password_hash ?? null;
 
-    const valid = await bcrypt.compare(String(password), userRow.password_hash);
-    if (!valid) {
-      return res.status(401).json({ error: "Invalid email or password" });
+    let valid = false;
+    let tempLoginUsed = false;
+    if (!hash) {
+      const tempPassword = process.env.TEMP_LOGIN_PASSWORD || "Temp1234!";
+      if (String(password) === String(tempPassword)) {
+        valid = true;
+        tempLoginUsed = true;
+        try {
+          // Force user to change password after temp login
+          await db.pool.query(`UPDATE employees SET must_change_password = 1 WHERE id = ?`, [userRow.id]);
+        } catch (e) {
+          console.error("/auth/login: failed to set must_change_password for id", userRow.id, e);
+        }
+      } else {
+        console.warn("/auth/login: user has no password_hash set and temp password mismatch, id", userRow.id);
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
+    } else {
+      valid = await bcrypt.compare(String(password), hash);
+      if (!valid) {
+        console.warn("/auth/login: password mismatch for user id", userRow.id);
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
     }
 
     const baseRole = deriveRole(userRow);
@@ -113,7 +134,7 @@ router.post("/login", async (req: Request, res: Response) => {
         return res.status(500).json({ error: "Failed to save session" });
       }
 
-      if (userRow.must_change_password) {
+      if (tempLoginUsed || userRow.must_change_password) {
         return res.json({
           success: true,
           mustChangePassword: true,

@@ -85,7 +85,7 @@ const CeremonyPage: React.FC = () => {
 
   const [winner, setWinner] = useState<Nominee | null>(null);
 
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  // const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeFaces, setEmployeeFaces] = useState<
     { id: number; name: string; photo_url: string }[]
   >([]);
@@ -135,17 +135,17 @@ const CeremonyPage: React.FC = () => {
         setOverallWinner(resultsData.overall_winner);
 
         const initial: Record<string, boolean> = {};
-        resultsData.results.forEach((c) => (initial[c.question_key] = false));
+        resultsData.results.forEach((c:any) => (initial[c.question_key] = false));
         setCompleted(initial);
 
-        const emps = empRes.data.filter((e) => e.role === "Employee");
-        const faces = emps.map((e) => ({
+        const emps = empRes.data.filter((e:any) => e.role === "Employee");
+        const faces = emps.map((e:any) => ({
           id: e.id,
           name: e.name,
           photo_url: `/photos/${e.id}.jpg`,
         }));
 
-        setEmployees(emps);
+        // setEmployees(emps);
         setEmployeeFaces(faces);
       } catch (err) {
         console.error("Error loading ceremony data:", err);

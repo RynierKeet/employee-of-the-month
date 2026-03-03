@@ -3,6 +3,8 @@ import React, { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 
+const API_BASE: string = (import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:3000";
+
 export default function ChangePassword() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -50,7 +52,7 @@ export default function ChangePassword() {
     setSaving(true);
 
     try {
-      const res = await fetch("/auth/change-password", {
+      const res = await fetch(`${API_BASE}/auth/change-password`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },

@@ -79,14 +79,14 @@ export default function Adjudication() {
   const tiedEmployeeIds = tiedRows.map((t) => t.employee_id);
   const tiedEmployees = employees.filter((e) => tiedEmployeeIds.includes(e.id));
 
-  const reflectionsByEmployee = useMemo(() => {
-    const map: Record<number, Reflection[]> = {};
-    reflections.forEach((r) => {
-      if (!map[r.employee_id]) map[r.employee_id] = [];
-      map[r.employee_id].push(r);
-    });
-    return map;
-  }, [reflections]);
+  // const reflectionsByEmployee = useMemo(() => {
+  //   const map: Record<number, Reflection[]> = {};
+  //   reflections.forEach((r) => {
+  //     if (!map[r.employee_id]) map[r.employee_id] = [];
+  //     map[r.employee_id].push(r);
+  //   });
+  //   return map;
+  // }, [reflections]);
 
   const votesByEmployee = useMemo(() => {
     const map: Record<number, Vote[]> = {};

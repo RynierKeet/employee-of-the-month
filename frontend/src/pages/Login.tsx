@@ -12,6 +12,8 @@ import { useNavigate, useLocation } from "react-router-dom";
 
 type Role = "Admin" | "Adjudicator" | "Employee";
 
+const API_BASE: string = (import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:3000";
+
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -36,7 +38,7 @@ export default function Login() {
   async function pollForSession(maxAttempts = 12, delayMs = 300) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const meRes = await fetch("/auth/me", { credentials: "include" });
+        const meRes = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
         if (meRes.ok) {
           return { ok: true, json: await meRes.json().catch(() => null) };
         }
@@ -64,7 +66,7 @@ export default function Login() {
     setSubmitting(true);
 
     try {
-      const res = await fetch("/auth/login", {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -117,7 +119,7 @@ export default function Login() {
     setError(null);
 
     try {
-      const res = await fetch("/auth/select-role", {
+      const res = await fetch(`${API_BASE}/auth/select-role`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },

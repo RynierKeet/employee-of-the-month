@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import session from "express-session";
 import fs from "fs";
 import path from "path";
-import https from "https";
 
 import employeesRouter from "./routes/employees";
 import reflectionsRouter from "./routes/reflections";
@@ -24,11 +23,6 @@ dotenv.config();
 
 const app = express();
 
-// -----------------------------------------------------
-// HTTPS CERTIFICATES FOR LOCAL DEVELOPMENT
-// -----------------------------------------------------
-const key = fs.readFileSync(path.join(process.cwd(), "certs", "localhost-key.pem"));
-const cert = fs.readFileSync(path.join(process.cwd(), "certs", "localhost.pem"));
 
 // -----------------------------------------------------
 // SESSION STORE
@@ -97,10 +91,24 @@ if (!SESSION_SECRET) {
    CORE MIDDLEWARE
 ----------------------------------------------------- */
 
-// ⭐ IMPORTANT: Frontend will run on HTTPS now
+// Allow frontend on local HTTP dev server (any localhost/127.0.0.1 port)
 app.use(
   cors({
-    origin: "https://localhost:5175",
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // allow non-browser or same-origin
+      try {
+        const allowlist = new Set([
+          "http://localhost:5175",
+          "http://127.0.0.1:5175",
+        ]);
+        if (allowlist.has(origin)) return callback(null, true);
+
+        const allowed = /^http:\/\/(localhost|127\.0\.0\.1)(:\\d+)?$/i.test(origin);
+        return callback(null, allowed);
+      } catch {
+        return callback(null, false);
+      }
+    },
     credentials: true,
   })
 );
@@ -113,10 +121,8 @@ app.use(morganMiddleware);
 app.use("/auth/login", loginLimiter);
 
 /* -----------------------------------------------------
-   SESSION MIDDLEWARE — NOW HTTPS‑COMPATIBLE
+   SESSION MIDDLEWARE — HTTP (local dev)
 ----------------------------------------------------- */
-
-app.set("trust proxy", 1); // ⭐ REQUIRED for Secure + SameSite=None cookies
 
 app.use(
   session({
@@ -126,8 +132,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,      // ⭐ REQUIRED for SameSite=None
-      sameSite: "none",  // ⭐ REQUIRED for cross-origin cookies
+      secure: false,
+      sameSite: "lax",
       maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   })
@@ -338,7 +344,7 @@ async function ensureUniqueIndex() {
 }
 
 /* -----------------------------------------------------
-   START HTTPS SERVER
+   START HTTP SERVER
 ----------------------------------------------------- */
 const PORT = Number(process.env.PORT || 3000);
 
@@ -349,8 +355,8 @@ const PORT = Number(process.env.PORT || 3000);
     console.warn("ensureUniqueIndex error:", err);
   }
 
-  https.createServer({ key, cert }, app).listen(PORT, () => {
-    console.log(`HTTPS backend running on https://localhost:${PORT}`);
+  app.listen(PORT, () => {
+    console.log(`HTTP backend running on http://localhost:${PORT}`);
     console.log("Mounted API prefixes:");
     mountedRoutes.forEach((r) => console.log("  " + r));
   });

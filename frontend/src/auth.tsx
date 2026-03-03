@@ -35,6 +35,8 @@ export function useAuth(): AuthContextShape {
   return ctx;
 }
 
+const API_BASE: string = (import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:3000";
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<AuthUser>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -45,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   const fetchMe = useCallback(async () => {
     try {
-      const res = await fetch("/auth/me", { credentials: "include" });
+      const res = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
 
       if (!res.ok) {
         setMe(null);
@@ -92,7 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * Login
    */
   async function login(email: string, password: string) {
-    const res = await fetch("/auth/login", {
+    const res = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -122,7 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   async function logout() {
     try {
-      await fetch("/auth/logout", {
+      await fetch(`${API_BASE}/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
